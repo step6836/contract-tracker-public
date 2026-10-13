@@ -1,0 +1,440 @@
+{
+  "type": "renewal",
+  "label": "Renewal",
+  "id_prefix": "R",
+  "start_label": "Renewal Notice & Renewal Election Form sent",
+  "notes": [
+    "Renewals already have a supplier account, so there is no supplier set-up."
+  ],
+  "flags": [],
+  "steps": [
+    {
+      "id": "renewal_notice_sent",
+      "label": "Renewal Notice & Renewal Election Form sent",
+      "owner": "Contracts",
+      "hint": "Official start date. Goes out 6 months before the FA term expires."
+    },
+    {
+      "id": "election_form_received",
+      "label": "Renewal Election Form received",
+      "owner": "Contracts",
+      "untimed": true,
+      "hint": "If it hasn't come in, Contracts Team follows up 1 month before the due date and the Liaison (Operations) 1 week before.",
+      "reminders": {
+        "due": "election_due",
+        "what": "Renewal Election Form",
+        "items": [
+          {
+            "key": "reminder_1",
+            "label": "1st reminder: Contracts Team follow-up",
+            "before_months": 1
+          },
+          {
+            "key": "reminder_2",
+            "label": "2nd reminder: Liaison (Operations) follow-up",
+            "before_days": 7
+          }
+        ]
+      }
+    },
+    {
+      "id": "contracts_eval",
+      "label": "Contracts Team Evaluation",
+      "owner": "Contracts",
+      "checklist": [
+        {
+          "key": "sent_to_legal",
+          "label": "Sent to Legal",
+          "owner": "Contracts"
+        },
+        {
+          "key": "proceed_confirmed",
+          "label": "Confirmation to proceed",
+          "owner": "Legal"
+        }
+      ],
+      "hint": "Only the renewal unit + related locations’ Principal Designation review."
+    },
+    {
+      "id": "mgmt_confirmation",
+      "label": "Management Confirmation",
+      "owner": "Management",
+      "only_if_held_at": "contracts_eval",
+      "hint": "Needed because the case was put on hold during the Contracts Team Evaluation (major or frequent defaults).",
+      "checklist": [
+        {
+          "key": "mgmt_confirmed",
+          "label": "Management confirmed"
+        }
+      ]
+    },
+    {
+      "id": "ops_acct_inspection",
+      "label": "Operations & Accounting Team Inspection",
+      "owner": "Operations & Accounting",
+      "groups": [
+        {
+          "key": "acct",
+          "label": "Accounting Team Inspection",
+          "short": "Accounting"
+        },
+        {
+          "key": "ops",
+          "label": "Operations Team Inspection",
+          "short": "Operations"
+        }
+      ],
+      "checklist": [
+        {
+          "key": "acct_requested",
+          "label": "Requested",
+          "group": "acct",
+          "owner": "Contracts"
+        },
+        {
+          "key": "acct_satisfactory",
+          "label": "Satisfactory",
+          "group": "acct",
+          "owner": "Accounting"
+        },
+        {
+          "key": "ops_requested",
+          "label": "Requested",
+          "group": "ops",
+          "owner": "Contracts"
+        },
+        {
+          "key": "ops_satisfactory",
+          "label": "Satisfactory",
+          "group": "ops",
+          "owner": "Operations"
+        }
+      ],
+      "hint": "Each team's month starts the day its inspection is requested. If it runs over, Contracts Team follows up with that team."
+    },
+    {
+      "id": "fdd_nda",
+      "label": "FDD & NDA",
+      "owner": "Contracts",
+      "review_days": 14,
+      "review_from": "fdd_received",
+      "hint": "24–48 hours for the franchisee to sign and return them. The 14-day review starts once they're signed and returned; the signing can't be scheduled before it ends (FAI and the FA draft can go ahead).",
+      "checklist": [
+        {
+          "key": "fdd_sent",
+          "label": "FDD Sent",
+          "owner": "Contracts"
+        },
+        {
+          "key": "fdd_received",
+          "label": "Signed & received",
+          "waiting": "signed FDD & NDA",
+          "owner": "Contracts"
+        }
+      ]
+    },
+    {
+      "id": "fai",
+      "label": "FAI & Lease Confirmation",
+      "owner": "Contracts",
+      "hint": "The FA draft can be requested once the personal and entity documents are in. The lease can keep going, but it has to be confirmed before the signing is scheduled.",
+      "checklist": [
+        {
+          "key": "fai_sent",
+          "label": "FAI Sent"
+        }
+      ],
+      "sections": [
+        {
+          "key": "personal",
+          "label": "Personal Documents",
+          "waiting": "personal documents",
+          "start": "docs",
+          "nodes": {
+            "docs": {
+              "type": "checks",
+              "issues": true,
+              "items": [
+                {
+                  "key": "ids",
+                  "label": "2 forms of ID"
+                },
+                {
+                  "key": "residence",
+                  "label": "Proof of residence"
+                },
+                {
+                  "key": "bank",
+                  "label": "Bank statements"
+                },
+                {
+                  "key": "tax_return",
+                  "label": "Tax return"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "key": "entity",
+          "label": "Entity Documents",
+          "waiting": "entity documents",
+          "start": "type",
+          "nodes": {
+            "type": {
+              "type": "choice",
+              "label": "Entity type",
+              "options": [
+                {
+                  "value": "llc",
+                  "label": "LLC",
+                  "next": "llc_docs"
+                },
+                {
+                  "value": "inc",
+                  "label": "INC",
+                  "next": "inc_docs"
+                }
+              ]
+            },
+            "llc_docs": {
+              "type": "checks",
+              "issues": true,
+              "items": [
+                {
+                  "key": "llc_articles",
+                  "label": "Articles of organization"
+                },
+                {
+                  "key": "llc_operating",
+                  "label": "Operating agreement"
+                },
+                {
+                  "key": "llc_ownership",
+                  "label": "Evidence of ownership and management"
+                },
+                {
+                  "key": "llc_irs",
+                  "label": "IRS letter"
+                },
+                {
+                  "key": "llc_tax",
+                  "label": "Corporate tax return"
+                }
+              ]
+            },
+            "inc_docs": {
+              "type": "checks",
+              "issues": true,
+              "items": [
+                {
+                  "key": "inc_articles",
+                  "label": "Articles of incorporation"
+                },
+                {
+                  "key": "inc_bylaws",
+                  "label": "Bylaws"
+                },
+                {
+                  "key": "inc_ownership",
+                  "label": "Evidence of ownership and management"
+                },
+                {
+                  "key": "inc_irs",
+                  "label": "IRS letter"
+                },
+                {
+                  "key": "inc_tax",
+                  "label": "Corporate tax return"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "key": "lease",
+          "label": "Lease Confirmation",
+          "waiting": "lease",
+          "start": "on_file",
+          "nodes": {
+            "on_file": {
+              "type": "choice",
+              "label": "Lease on file?",
+              "options": [
+                {
+                  "value": "yes",
+                  "label": "Yes",
+                  "next": "covers_term"
+                },
+                {
+                  "value": "no",
+                  "label": "No",
+                  "next": "request_lease"
+                }
+              ]
+            },
+            "covers_term": {
+              "type": "choice",
+              "label": "Lease term covers renewal term?",
+              "options": [
+                {
+                  "value": "yes",
+                  "label": "Yes",
+                  "done_text": "Lease on file, covers renewal term"
+                },
+                {
+                  "value": "no",
+                  "label": "No",
+                  "next": "request_draft"
+                }
+              ]
+            },
+            "request_lease": {
+              "type": "checks",
+              "instruction": "Request lease",
+              "ordered": true,
+              "done_text": "Lease received & approved",
+              "items": [
+                {
+                  "key": "lease_received",
+                  "label": "Lease received"
+                },
+                {
+                  "key": "lease_satisfactory",
+                  "label": "Lease satisfactory"
+                }
+              ]
+            },
+            "request_draft": {
+              "type": "checks",
+              "instruction": "Request lease renewal draft",
+              "ordered": true,
+              "done_text": "Lease received & approved",
+              "items": [
+                {
+                  "key": "draft_received",
+                  "label": "Lease received"
+                },
+                {
+                  "key": "draft_satisfactory",
+                  "label": "Lease satisfactory"
+                }
+              ]
+            }
+          },
+          "carry_on": true
+        }
+      ],
+      "untimed": true
+    },
+    {
+      "id": "fa_draft",
+      "label": "Franchise Agreement Draft",
+      "owner": "Contracts",
+      "hint": "1 week for Legal, counted from the day the draft is requested (it starts over if it's requested again after an FAI correction). If Legal can't draft because of a problem with the FAI documents, use FAI correction to send the case back to FAI.",
+      "checklist": [
+        {
+          "key": "draft_requested",
+          "label": "Draft requested",
+          "owner": "Contracts"
+        },
+        {
+          "key": "draft_received",
+          "label": "Draft received",
+          "status": "Legal drafting Franchise Agreement",
+          "owner": "Legal"
+        },
+        {
+          "key": "draft_sent",
+          "label": "Draft sent for Franchisee review",
+          "waiting": "draft to be sent for franchisee review",
+          "show_after_previous": true,
+          "hide_when_done": true,
+          "owner": "Contracts"
+        }
+      ],
+      "correction": {
+        "label": "FAI correction",
+        "back_to": "fai",
+        "after": "draft_requested",
+        "before": "draft_received"
+      }
+    },
+    {
+      "id": "fa_negotiation",
+      "label": "Franchise Agreement Negotiation / Review Period",
+      "owner": "Contracts",
+      "review_days": 7,
+      "hint": "7-day franchisee review period, counted from the day the draft was sent. The signing can't be scheduled within those 7 days, before the 14-day FDD & NDA review is over, or before the lease is confirmed.",
+      "started_by": {
+        "step": "fa_draft",
+        "item": "draft_sent",
+        "label": "Draft sent to franchisee"
+      },
+      "schedules": "fa_signing",
+      "schedule_label": "Signing",
+      "untimed": true,
+      "schedule_requires": {
+        "reviews": [
+          "fdd_nda"
+        ],
+        "sections": [
+          {
+            "step": "fai",
+            "section": "lease",
+            "label": "lease confirmation"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fa_signing",
+      "label": "Franchise Agreement Signing Day",
+      "owner": "Contracts",
+      "milestone": "signing",
+      "scheduled_question": "Did signing happen?",
+      "untimed": true,
+      "hint": "Send the invitation as a calendar event.",
+      "checklist": [
+        {
+          "key": "invite_sent",
+          "label": "Calendar invitation sent"
+        }
+      ]
+    },
+    {
+      "id": "after_signing",
+      "label": "After signing",
+      "owner": "Contracts",
+      "hint": "These can be done in any order.",
+      "checklist": [
+        {
+          "key": "supplier_reminder",
+          "label": "Send supplier renewal reminder",
+          "group": "supplier"
+        },
+        {
+          "key": "contact_master",
+          "label": "Update Contact List & Master Chart",
+          "group": "contact"
+        }
+      ],
+      "untimed": true
+    }
+  ],
+  "dates": [
+    {
+      "key": "fa_expiration",
+      "label": "FA term expires",
+      "required": true,
+      "hint": "Used to schedule the signing before the term ends."
+    },
+    {
+      "key": "election_due",
+      "label": "Renewal Election Form due by",
+      "required": true
+    }
+  ],
+  "target_from": "fa_expiration",
+  "expiration_date": "fa_expiration"
+}
