@@ -31,11 +31,11 @@ ACTIVE_HEADERS = ["Case ID", "Type", "Store #", "Store Name", "Current Step", "R
                   "Days in Step", "Status", "Target Signing Date", "Progress", "Steps Done"]
 ATTENTION_HEADERS = ["Case ID", "Type", "Store #", "Store Name", "Current Step", "Responsible Team", "Days in Step", "Status"]
 SOON_HEADERS = ["Case ID", "Type", "Store #", "Store Name", "Target Signing Date", "Current Step",
-                "Days to/Past Target", "Progress"]
+                "Days to/Past Due", "Progress"]
 COMPLETED_HEADERS = ["Case ID", "Type", "Store #", "Store Name", "Started", "Signed", "Completed"]
 CLOSED_HEADERS = ["Case ID", "Type", "Store #", "Store Name", "Outcome", "Reason", "Started", "Closed"]
 
-TYPE_ORDER = ["renewal", "transfer", "expansion"]
+TYPE_ORDER = ["renewal", "transfer", "expansion", "lease"]
 CLOSED_STATUSES = ("not_approved", "withdrawn")
 OUTCOME = {"not_approved": "Not approved", "withdrawn": "Withdrawn"}
 
@@ -48,6 +48,9 @@ STATUS_STYLE = {
     "Past Due": ("FFC7CE", "9C0006", "The target signing date has passed and the agreement is not yet signed."),
 }
 DATE_FMT = "mmm d, yyyy"
+# Headings centered, all data left-justified, on every sheet.
+HEAD_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+DATA_ALIGN = Alignment(horizontal="left", vertical="top")
 
 
 # ---- data -----------------------------------------------------------------------------------
@@ -80,7 +83,7 @@ def _status(s: dict, t: date) -> str:
         return "Past Due"
     if s.get("hold"):
         return "On Hold"
-    if s["current"] and s["current"]["is_stale"]:
+    if any(cur and cur["is_stale"] for cur in (s["current"], _alongside(s))):
         return "Delayed"
     return "On Track"
 
@@ -89,8 +92,22 @@ def _type_rank(s: dict) -> int:
     return TYPE_ORDER.index(s["type"]) if s["type"] in TYPE_ORDER else len(TYPE_ORDER)
 
 
+def _alongside(s: dict) -> Optional[dict]:
+    """The current step of a track that runs alongside the main one (the renewal inspection)."""
+    side = s.get("side")
+    return side["current"] if side and side["alongside"] else None
+
+
 def _step(s: dict) -> str:
-    return s["current"]["label"] if s["current"] else ("Waiting on lease" if s["lease_pending"] else "")
+    side = s.get("side")
+    main = s["current"]["label"] if s["current"] else (side["waiting_label"] if side and not side["done"] else "")
+    other = _alongside(s)
+    return f"{main} + {other['label']}" if main and other else main or (other or {}).get("label", "")
+
+
+def _owner(s: dict) -> str:
+    teams = [cur["owner"] for cur in (s["current"], _alongside(s)) if cur]
+    return " + ".join(dict.fromkeys(teams))
 
 
 # ---- formatting helpers ---------------------------------------------------------------------
@@ -124,7 +141,7 @@ def _header(ws, row: int, headers: list[str]) -> None:
         cell = ws.cell(row=row, column=col, value=h)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor=NAVY)
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        cell.alignment = HEAD_ALIGN
         _widen(ws, col, h)
 
 
@@ -137,6 +154,7 @@ def _table(ws, row: int, name: str, headers: list[str], rows: list[list], empty:
     for r, values in enumerate(rows, row + 1):
         for col, v in enumerate(values, 1):
             cell = ws.cell(row=r, column=col, value=v)
+            cell.alignment = DATA_ALIGN
             h = headers[col - 1]
             if isinstance(v, date):
                 cell.number_format = DATE_FMT
@@ -146,7 +164,7 @@ def _table(ws, row: int, name: str, headers: list[str], rows: list[list], empty:
                 fill, color, _ = STATUS_STYLE[v]
                 cell.fill, cell.font = PatternFill("solid", fgColor=fill), Font(bold=True, color=color)
             elif h == "Reason":
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             _widen(ws, col, v)
     last = row + len(rows)
     table = Table(displayName=name, ref=f"A{row}:{get_column_letter(len(headers))}{last}")
@@ -176,7 +194,7 @@ def _summary(ws, summaries: list[dict], views: list[dict], t: date, stamp: str) 
     # counts by type
     row = _heading(ws, 4, "At a Glance")
     year = t.year
-    headers = ["Case Type", "Active", "On Track", "On Hold", "Past Target Date", f"Due Within {SOON_DAYS} Days",
+    headers = ["Case Type", "Active", *STATUS_STYLE, f"Due Within {SOON_DAYS} Days",
                f"Completed in {year}", "Closed Early"]
     _header(ws, row, headers)
     labels = {k: tm["label"] + "s" for k, tm in engine.TEMPLATES.items()}
@@ -184,10 +202,8 @@ def _summary(ws, summaries: list[dict], views: list[dict], t: date, stamp: str) 
     totals = [0] * (len(headers) - 1)
     for i, k in enumerate(types):
         mine = [s for s in active if s["type"] == k]
-        counts = [len(mine),
-                  sum(1 for s in mine if _status(s, t) == "On Track"),
-                  sum(1 for s in mine if s.get("hold")),
-                  sum(1 for s in mine if _past_target(s, t)),
+        counts = [len(mine),  # one status per case, so the status columns add up to Active
+                  *(sum(1 for s in mine if _status(s, t) == st) for st in STATUS_STYLE),
                   sum(1 for s in soon if s["type"] == k and not _past_target(s, t)),
                   sum(1 for v in views if v["type"] == k and v["status"] == "completed"
                       and (_date(v["completed_at"]) or t).year == year),
@@ -196,28 +212,30 @@ def _summary(ws, summaries: list[dict], views: list[dict], t: date, stamp: str) 
         totals = [a + b for a, b in zip(totals, counts)]
         for col, v in enumerate([labels[k], *counts], 1):
             cell = ws.cell(row=row + 1 + i, column=col, value=v)
+            cell.alignment = DATA_ALIGN
             if i % 2:
                 cell.fill = PatternFill("solid", fgColor=STRIPE)
             _widen(ws, col, v)
     total_row = row + 1 + len(types)
     for col, v in enumerate(["Total", *totals], 1):
         cell = ws.cell(row=total_row, column=col, value=v)
-        cell.font = Font(bold=True)
+        cell.font, cell.alignment = Font(bold=True), DATA_ALIGN
         cell.border = Border(top=Side(style="thin", color=NAVY))
-    for r in range(row + 1, total_row + 1):  # make On Hold / Past Target Date counts pop when they're not zero
-        for col, st in ((4, "On Hold"), (5, "Past Due")):
+    for r in range(row + 1, total_row + 1):  # make Delayed / On Hold / Past Due counts pop when they're not zero
+        for st in ("Delayed", "On Hold", "Past Due"):
+            col = headers.index(st) + 1
             if ws.cell(row=r, column=col).value:
                 ws.cell(row=r, column=col).font = Font(bold=True, color=STATUS_STYLE[st][1])
 
     # what needs attention
     row = _heading(ws, total_row + 3, "Needs Attention")
-    ws.cell(row=row, column=1, value="Delayed, on hold, or past target date; longest in current step first").font = Font(italic=True, color=GREY)
+    ws.cell(row=row, column=1, value="Delayed, on hold, or past due; longest in current step first").font = Font(italic=True, color=GREY)
     late = sorted((s for s in active if _status(s, t) != "On Track"),
                   key=lambda s: -(s["current"]["days_in_step"] if s["current"] else 0))
     row = _table(ws, row + 1, "NeedsAttention", ATTENTION_HEADERS, [
-        [*_store(s), _step(s), s["current"]["owner"] if s["current"] else "",
+        [*_store(s), _step(s), _owner(s),
          s["current"]["days_in_step"] if s["current"] else None, _status(s, t)] for s in late],
-        empty="Nothing is delayed, on hold, or past its target date.")
+        empty="Nothing is delayed, on hold, or past due.")
 
     # what's closing
     row = _heading(ws, row + 1, "Upcoming and Past Due Signings")
@@ -225,7 +243,7 @@ def _summary(ws, summaries: list[dict], views: list[dict], t: date, stamp: str) 
     soon_rows = []
     for s in soon:
         left = (_date(s["target_signing_date"]) - t).days
-        when = "Today" if left == 0 else f"In {left} day{'s' if left != 1 else ''}" if left > 0 else f"{-left} day{'s' if left != -1 else ''} past target"
+        when = "Today" if left == 0 else f"In {left} day{'s' if left != 1 else ''}" if left > 0 else f"{-left} day{'s' if left != -1 else ''} past due"
         soon_rows.append([*_store(s), _date(s["target_signing_date"]), _step(s), when, s["progress"]["percent"] / 100])
     first = row + 2
     row = _table(ws, row + 1, "SigningSoon", SOON_HEADERS, soon_rows,
@@ -238,7 +256,7 @@ def _summary(ws, summaries: list[dict], views: list[dict], t: date, stamp: str) 
     row = _heading(ws, row + 1, "Status Key")
     for i, (name, (fill, color, meaning)) in enumerate(STATUS_STYLE.items()):
         cell = ws.cell(row=row + i, column=1, value=name)
-        cell.fill, cell.font = PatternFill("solid", fgColor=fill), Font(bold=True, color=color)
+        cell.fill, cell.font, cell.alignment = PatternFill("solid", fgColor=fill), Font(bold=True, color=color), DATA_ALIGN
         ws.cell(row=row + i, column=2, value=meaning).font = Font(color=GREY)
 
 
@@ -249,7 +267,7 @@ def _active(ws, summaries: list[dict], t: date, stamp: str) -> None:
     rows = []
     for s in active:
         cur, p = s["current"], s["progress"]
-        rows.append([*_store(s), _step(s), cur["owner"] if cur else "", cur["days_in_step"] if cur else None,
+        rows.append([*_store(s), _step(s), _owner(s), cur["days_in_step"] if cur else None,
                      _status(s, t), _date(s["target_signing_date"]), p["percent"] / 100, f"{p['done']} of {p['total']}"])
     _table(ws, HEADER_ROW, "ActiveCases", ACTIVE_HEADERS, rows, empty="No active cases.")
     ws.freeze_panes = ws.cell(row=HEADER_ROW + 1, column=1)

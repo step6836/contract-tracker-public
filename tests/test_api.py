@@ -89,7 +89,9 @@ def test_renewal_order_and_checklist(client):
     ev_step = next(s for s in v["steps"] if s["id"] == "contracts_eval")
     assert ev_step["status"] == "done" and ev_step["date"] == d(4)
     assert [ci["date"] for ci in ev_step["checklist"]] == [d(10), d(4)]
-    assert v["current"]["id"] == "ops_acct_inspection" and v["current"]["days_in_step"] == 4
+    assert v["current"]["id"] == "fdd_nda" and v["current"]["days_in_step"] == 4
+    side = v["side_track"]
+    assert side["started"] and side["current"]["id"] == "ops_acct_inspection" and side["current"]["days_in_step"] == 4
     # undo reopens the evaluation waiting on confirmation, keeping the Legal date
     v = client.post(f"/api/cases/{c['id']}/undo", json={}).json()
     assert v["current"]["id"] == "contracts_eval"
@@ -97,29 +99,56 @@ def test_renewal_order_and_checklist(client):
     assert chk("sent_to_legal", checked=False).status_code == 200
 
 
-def test_inspection_two_groups(client):
+def inspect(client, cid, on):
+    """Request both renewal inspections and mark them satisfactory, all on `on`."""
+    for key in ("acct_requested", "acct_satisfactory", "ops_requested", "ops_satisfactory"):
+        r = client.post(f"/api/cases/{cid}/steps/ops_acct_inspection/check",
+                        json={"key": key, "checked": True, "checked_on": on, "track": "side"})
+        assert r.status_code == 200, r.text
+    return r
+
+
+def test_inspection_runs_alongside_fdd(client):
     c = mk(client, "renewal", store_number="41")
     cid = c["id"]
+    assert [s["id"] for s in c["steps"]][3:5] == ["mgmt_confirmation", "fdd_nda"]
+    assert [s["id"] for s in c["side_track"]["steps"]] == ["ops_acct_inspection"]
+    ins = f"/api/cases/{cid}/steps/ops_acct_inspection/check"
+    chk = lambda key, on=None, checked=True: client.post(ins, json={"key": key, "checked": checked, "checked_on": on, "track": "side"})
+    # the inspection waits for the Contracts Team Evaluation
+    assert not c["side_track"]["started"] and c["side_track"]["current"] is None
+    r = chk("acct_requested", d(18))
+    assert r.status_code == 400 and "Contracts Team Evaluation" in r.json()["detail"]
     finish(client, cid, next(s for s in c["steps"] if s["id"] == "election_form_received"), d(18))
     v = finish(client, cid, next(s for s in c["steps"] if s["id"] == "contracts_eval"), d(15)).json()
-    assert v["current"]["id"] == "ops_acct_inspection"
-    ins = f"/api/cases/{cid}/steps/ops_acct_inspection/check"
-    chk = lambda key, on=None, checked=True: client.post(ins, json={"key": key, "checked": checked, "checked_on": on})
+    assert v["current"]["id"] == "fdd_nda" and v["side_track"]["current"]["id"] == "ops_acct_inspection"
+    assert chk("ops_requested", d(16)).status_code == 400               # before the evaluation was done
     # each group has its own order, but the groups don't wait on each other
     assert chk("acct_satisfactory", d(10)).status_code == 400
     assert chk("ops_requested", d(14)).status_code == 200
     assert chk("acct_requested", d(13)).status_code == 200
     listed = next(x for x in client.get("/api/cases").json() if x["id"] == cid)
-    assert listed["current"]["status_note"] == "Accounting: requested · Operations: requested"
+    assert listed["current"]["id"] == "fdd_nda"
+    assert listed["side"]["alongside"] and listed["side"]["current"]["status_note"] == "Accounting: requested · Operations: requested"
+    # the FDD & NDA go ahead at the same time
+    fdd = lambda key, on: client.post(f"/api/cases/{cid}/steps/fdd_nda/check", json={"key": key, "checked": True, "checked_on": on})
+    assert fdd("fdd_sent", d(14)).status_code == 200
     v = chk("ops_satisfactory", d(6)).json()
-    assert v["current"]["id"] == "ops_acct_inspection"
-    assert v["current"]["status_note"] == "Accounting: requested · Operations: satisfactory"
+    assert v["side_track"]["current"]["status_note"] == "Accounting: requested · Operations: satisfactory"
     # the last box completes the step, dated on the latest box (not necessarily the last one clicked)
     v = chk("acct_satisfactory", d(8)).json()
-    step = next(s for s in v["steps"] if s["id"] == "ops_acct_inspection")
-    assert step["status"] == "done" and step["date"] == d(6)
+    step = v["side_track"]["steps"][0]
+    assert step["status"] == "done" and step["date"] == d(6) and v["side_track"]["done"]
     assert v["current"]["id"] == "fdd_nda"
     assert not any(s["label"] == "VP Approval" for s in v["steps"])   # renewals have no VP approval
+    # the evaluation can't be undone while the inspection it started has progress
+    v = client.post(f"/api/cases/{cid}/steps/fdd_nda/check", json={"key": "fdd_sent", "checked": False}).json()
+    r = client.post(f"/api/cases/{cid}/undo", json={})
+    assert r.status_code == 400 and "Undo the Operations & Accounting Team Inspection first" in r.json()["detail"]
+    v = client.post(f"/api/cases/{cid}/undo", json={"track": "side"}).json()
+    assert {ci["key"]: ci["checked"] for ci in v["side_track"]["current"]["checklist"]} == {
+        "acct_requested": True, "acct_satisfactory": True, "ops_requested": True, "ops_satisfactory": False}
+    chk("ops_satisfactory", d(6))
     # FDD & NDA: the 14-day review starts once they're signed and returned; receiving them moves the case on
     assert "review_ends" not in v["current"]
     fdd = lambda key, on: client.post(f"/api/cases/{cid}/steps/fdd_nda/check", json={"key": key, "checked": True, "checked_on": on})
@@ -130,10 +159,6 @@ def test_inspection_two_groups(client):
     assert next(s for s in v["steps"] if s["id"] == "fdd_nda")["review_ends"] == d(-12)   # still running
     v = client.post(f"/api/cases/{cid}/undo", json={}).json()
     assert v["current"]["id"] == "fdd_nda" and v["current"]["checklist"][0]["checked"]
-    # undo unticks the box that finished it (operations satisfactory), keeping the rest
-    v = client.post(f"/api/cases/{cid}/undo", json={}).json()
-    assert {ci["key"]: ci["checked"] for ci in v["current"]["checklist"]} == {
-        "acct_requested": True, "acct_satisfactory": True, "ops_requested": True, "ops_satisfactory": False}
 
 
 def test_renewal_fai_sections(client):
@@ -205,6 +230,7 @@ def fai_done_case(client, store):
             break
         if s["status"] == "pending":
             finish(client, cid, s, d(25))
+    inspect(client, cid, d(24))
     url = f"/api/cases/{cid}/steps/fai"
     client.post(f"{url}/check", json={"key": "fai_sent", "checked": True, "checked_on": d(24)})
     sec = lambda section, node, **kw: client.post(f"{url}/section", json={"section": section, "node": node, "done_on": d(20), **kw})
@@ -518,11 +544,11 @@ def test_hold_pauses_the_clock_and_brings_in_management_confirmation(client):
     c2 = mk(client, "renewal", store_number="82")
     v = finish(client, c2["id"], c2["current"], d(15)).json()
     v = finish(client, c2["id"], v["current"], d(14)).json()
-    assert v["current"]["id"] == "ops_acct_inspection" and v["current"]["owner"] == "Contracts"
+    assert v["current"]["id"] == "fdd_nda" and v["side_track"]["current"]["owner"] == "Contracts"
     ins = f"/api/cases/{c2['id']}/steps/ops_acct_inspection/check"
     for key in ("acct_requested", "acct_satisfactory", "ops_requested"):
-        v = client.post(ins, json={"key": key, "checked": True, "checked_on": d(10)}).json()
-    assert v["current"]["owner"] == "Operations"                                # Accounting is satisfied
+        v = client.post(ins, json={"key": key, "checked": True, "checked_on": d(10), "track": "side"}).json()
+    assert v["side_track"]["current"]["owner"] == "Operations"                  # Accounting is satisfied
 
 
 def test_election_form_reminders_and_fa_expiration(client):
@@ -583,6 +609,10 @@ def test_signing_waits_for_fdd_review_and_lease(client):
     assert r.status_code == 400 and "lease confirmation" in r.json()["detail"]
     sec("lease", "on_file", value="yes")
     v = sec("lease", "covers_term", value="yes").json()                              # lease done after FAI
+    assert "Operations & Accounting Team Inspection" in v["current"]["schedule"]["blocked"]   # still out
+    r = client.post(url, json={"on": d(-4), "at": "10:00"})
+    assert r.status_code == 400 and "Inspection" in r.json()["detail"]
+    v = inspect(client, cid, d(9)).json()
     assert v["current"]["schedule"]["blocked"] is None
     r = client.post(url, json={"on": d(-2), "at": "10:00"})                          # after the 7 days, inside the 14
     assert r.status_code == 400 and "14-day FDD & NDA review period" in r.json()["detail"]
@@ -607,3 +637,67 @@ def test_notes_remember_the_step(client):
     v = finish(client, c["id"], c["current"], d(15)).json()
     v = client.post(f"/api/cases/{c['id']}/notes", json={"text": "Asked Legal for an update"}).json()
     assert v["notes"][-1]["step"] == "Contracts Team Evaluation"
+
+
+def test_lease_case_follow_up_review_and_approval(client):
+    r = client.post("/api/cases", json={"type": "lease", "store_number": "90", "store_name": "Lease Store", "start_date": d(10)})
+    assert r.status_code == 400 and "Lease expires" in r.json()["detail"]            # the expiration is required
+    c = mk(client, "lease", store_number="90", dates={"lease_expiration": d(-40)})
+    cid = c["id"]
+    assert cid == "L-90-1" and not c["has_signing"] and c["target_signing_date"] is None
+    assert c["current"]["id"] == "draft_received" and c["current"]["owner"] == "Franchisee"
+    assert any(a["kind"] == "expiring" for a in c["attention"])                       # inside 60 days
+    sec = f"/api/cases/{cid}/steps/draft_received/section"
+    v = client.post(sec, json={"section": "kind", "node": "kind", "value": "extension", "done_on": d(4)}).json()
+    step = next(s for s in v["steps"] if s["id"] == "draft_received")
+    assert step["status"] == "done" and step["date"] == d(4) and step["sections"][0]["done_text"] == "Lease extension"
+    v = client.post(f"/api/cases/{cid}/steps/lease_review/check", json={"key": "lease_approved", "checked": True, "checked_on": d(1)}).json()
+    assert v["status"] == "completed" and v["attention"] == []
+    expired = mk(client, "lease", store_number="91", dates={"lease_expiration": d(3)})
+    assert any(a["kind"] == "expired" and "isn't approved" in a["text"] for a in expired["attention"])
+
+
+def test_lease_links_to_renewals_transfers_and_expansions(client):
+    tr = mk(client, "transfer", store_number="95")
+    lease = mk(client, "lease", store_number="95", dates={"lease_expiration": d(-150)})
+    # same store, not linked yet: both sides are told
+    assert [o["id"] for o in lease["related"]["suggested"]] == [tr["id"]]
+    assert any(a["kind"] == "link" and tr["id"] in a["text"] for a in lease["attention"])
+    listed = {x["id"]: x for x in client.get("/api/cases").json()}
+    assert any(a["kind"] == "link" and lease["id"] in a["text"] for a in listed[tr["id"]]["attention"])
+    # link from the transfer's side: it's kept on the lease and shows on both
+    v = client.post(f"/api/cases/{tr['id']}/links", json={"case_id": lease["id"]}).json()
+    assert v["id"] == tr["id"] and [o["id"] for o in v["related"]["linked"]] == [lease["id"]]
+    assert v["related"]["linked"][0]["created_by_name"] == "Step" and not v["related"]["suggested"]
+    assert not any(a["kind"] == "link" for a in v["attention"])
+    lv = client.get(f"/api/cases/{lease['id']}").json()
+    assert lv["links"] == [tr["id"]] and lv["related"]["linked"][0]["current"]["label"]
+    assert client.post(f"/api/cases/{lease['id']}/links", json={"case_id": tr["id"]}).status_code == 400   # already
+    # only leases link, and a lease doesn't link to a lease
+    other = mk(client, "renewal", store_number="96")
+    assert client.post(f"/api/cases/{tr['id']}/links", json={"case_id": other["id"]}).status_code == 400
+    lease2 = mk(client, "lease", store_number="97", dates={"lease_expiration": d(-150)}, links=[other["id"]])
+    assert [o["id"] for o in lease2["related"]["linked"]] == [other["id"]]
+    assert client.post(f"/api/cases/{lease2['id']}/links", json={"case_id": lease["id"]}).status_code == 400
+    assert mk_status(client, "lease", dates={"lease_expiration": d(-150)}, links=["R-0-404"]) == 404
+    # unlink
+    v = client.post(f"/api/cases/{lease['id']}/links", json={"case_id": tr["id"], "linked": False}).json()
+    assert v["links"] == [] and [o["id"] for o in v["related"]["suggested"]] == [tr["id"]]
+    ev = client.get("/api/events", params={"case_id": tr["id"]}).json()
+    assert [e["action"] for e in ev][:2] == ["case_unlinked", "case_linked"]
+
+
+def test_old_renewal_keeps_its_inspection_when_it_moves_to_its_own_track(client):
+    c = mk(client, "renewal", store_number="98")
+    from backend import storage
+    with storage.LOCK:  # the way a renewal was saved before the inspection ran alongside
+        raw = storage.load_case(c["id"])
+        ins = {"id": "ops_acct_inspection", "label": "Operations & Accounting Team Inspection", "status": "done",
+               "date": d(12), "by": "step", "reason": None, "auto": False, "checks": {"acct_requested": d(14)}}
+        raw["steps"].insert(4, ins)
+        raw["side_steps"] = []
+        storage.save_case(raw)
+    v = client.get(f"/api/cases/{c['id']}").json()
+    assert "ops_acct_inspection" not in [s["id"] for s in v["steps"]]
+    step = v["side_track"]["steps"][0]
+    assert step["status"] == "done" and step["date"] == d(12) and v["side_track"]["done"]

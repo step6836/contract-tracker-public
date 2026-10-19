@@ -1,4 +1,4 @@
-﻿"""Exec report publishing: run with  python -m pytest tests -q"""
+"""Exec report publishing: run with  python -m pytest tests -q"""
 import json
 import os
 import tempfile
@@ -72,7 +72,7 @@ def test_publish_creates_workbook(client, config):
     assert row[8].value is None or row[8].number_format == publish.DATE_FMT
 
     values = [c for r in summary.iter_rows(values_only=True) for c in r]
-    for text in ("At a Glance", "Case Type", "On Hold", "Past Target Date", "Due Within 30 Days", "Closed Early",
+    for text in ("At a Glance", "Case Type", "Delayed", "On Hold", "Past Due", "Due Within 30 Days", "Closed Early",
                  "Needs Attention", "Upcoming and Past Due Signings", "Status Key", "Renewals"):
         assert text in values, text
     assert list(publish.STATUS_STYLE) == ["On Track", "Delayed", "On Hold", "Past Due"]

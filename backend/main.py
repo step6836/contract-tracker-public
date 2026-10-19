@@ -36,6 +36,10 @@ def engine_error(_: Request, exc: EngineError):
 
 # ---- request bodies (field names avoid clashing with the `date` type) ------------------------
 
+# The side track (the Expansion lease, the Renewal inspection); "lease" is what older pages send.
+Track = Literal["main", "side", "lease"]
+
+
 class LoginIn(BaseModel):
     username: str
     password: str
@@ -59,6 +63,7 @@ class CaseIn(BaseModel):
     target_signing_date: Optional[date] = None
     flags: dict[str, bool] = {}
     box_url: str = ""
+    links: list[str] = []
 
 
 class CaseUpdate(BaseModel):
@@ -77,19 +82,19 @@ class CaseUpdate(BaseModel):
 
 class CompleteIn(BaseModel):
     completed_on: Optional[date] = None
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class SkipIn(BaseModel):
     reason: str
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class CheckIn(BaseModel):
     key: str
     checked: bool
     checked_on: Optional[date] = None
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class SectionIn(BaseModel):
@@ -99,12 +104,12 @@ class SectionIn(BaseModel):
     item: Optional[str] = None       # for a checkbox
     checked: bool = True
     done_on: Optional[date] = None   # used if this completes the section
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class CorrectionIn(BaseModel):
     on: Optional[date] = None
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class IssueIn(BaseModel):
@@ -112,27 +117,27 @@ class IssueIn(BaseModel):
     item: str
     checked: bool
     on: Optional[date] = None        # used if this clears the last issue
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class TrackIn(BaseModel):
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class ScheduleIn(BaseModel):
     on: date
     at: str                          # "HH:MM", 24-hour
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class HappenedIn(BaseModel):
     happened: bool
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class StepDateIn(BaseModel):
     new_date: date
-    track: Literal["main", "lease"] = "main"
+    track: Track = "main"
 
 
 class NoteIn(BaseModel):
@@ -152,6 +157,11 @@ class HoldIn(BaseModel):
 
 class ResumeIn(BaseModel):
     on: Optional[date] = None
+
+
+class LinkIn(BaseModel):
+    case_id: str
+    linked: bool = True
 
 
 class ReminderIn(BaseModel):
@@ -180,8 +190,31 @@ def _load(case_id: str):
     return case, tmpl
 
 
+def _summaries(cfg) -> list[dict]:
+    """Every case's list summary, before relations are added."""
+    out = []
+    for c in storage.list_cases():
+        tmpl = engine.TEMPLATES.get(c["type"])
+        if not tmpl:
+            continue
+        engine.sync(c, tmpl)
+        out.append(engine.summarize(engine.build_view(c, tmpl, config=cfg)))
+    return out
+
+
+def _named(rel: dict) -> dict:
+    """Who opened each related case, by display name, so you can see whose case it is."""
+    for row in rel["linked"] + rel["suggested"]:
+        rec = auth.get_user(row["created_by"])
+        row["created_by_name"] = rec["display_name"] if rec else row["created_by"]
+    return rel
+
+
 def _view(case, tmpl):
-    return engine.build_view(case, tmpl, config=storage.load_config())
+    cfg = storage.load_config()
+    view = engine.build_view(case, tmpl, config=cfg)
+    others = [s for s in _summaries(cfg) if s["id"] != case["id"]]
+    return engine.add_relations(view, _named(engine.relations(engine.summarize(view), others)))
 
 
 def _save_and_log(case, user, action, text, detail=None):
@@ -191,7 +224,7 @@ def _save_and_log(case, user, action, text, detail=None):
 
 
 def _label(case, tmpl, step_id, track="main"):
-    steps = case.get("side_steps", []) if track == "lease" else case["steps"]  # labels can depend on the case's flags
+    steps = case.get("side_steps", []) if track != "main" else case["steps"]  # labels can depend on the case's flags
     return next((s["label"] for s in steps if s["id"] == step_id), step_id)
 
 
@@ -230,20 +263,15 @@ def meta(user=Depends(current_user)):
             "templates": {k: {"label": t["label"], "start_label": t.get("start_label"), "flags": t.get("flags", []),
                               "notes": t.get("notes", []), "has_lease_track": bool(t.get("side_track")),
                               "dates": t.get("dates", []), "target_from": t.get("target_from"),
-                              "has_transferee": k == "transfer"}
+                              "has_transferee": k == "transfer", "links_to": t.get("links_to", []),
+                              "has_signing": any(s.get("milestone") == "signing" for s in t["steps"])}
                           for k, t in engine.TEMPLATES.items()}}
 
 
 @api.get("/cases")
 def list_cases(user=Depends(current_user)):
-    cfg, out = storage.load_config(), []
-    for c in storage.list_cases():
-        tmpl = engine.TEMPLATES.get(c["type"])
-        if not tmpl:
-            continue
-        engine.sync(c, tmpl)
-        out.append(engine.summarize(engine.build_view(c, tmpl, config=cfg)))
-    return out
+    summaries = _summaries(storage.load_config())
+    return [engine.add_relations(s, _named(engine.relations(s, summaries))) for s in summaries]
 
 
 @api.post("/cases")
@@ -252,10 +280,15 @@ def create_case(body: CaseIn, user=Depends(current_user)):
     if not tmpl:
         raise HTTPException(400, "Unknown case type.")
     with storage.LOCK:
+        others = [_load(i)[0] for i in dict.fromkeys(body.links)]
         cid = storage.next_case_id(tmpl["id_prefix"], body.store_number)
         case = engine.new_case(tmpl, cid, body.model_dump(), user["username"])
+        for o in others:
+            engine.set_link(case, tmpl, o, True)
         _save_and_log(case, user, "case_created",
                       f"opened {tmpl['label'].lower()} case {cid} for {case['store_name']}")
+        for o in others:
+            storage.log_event(user["username"], "case_linked", o["id"], {"text": f"linked {tmpl['label'].lower()} case {cid}"})
     return _view(case, tmpl)
 
 
@@ -372,7 +405,7 @@ def happened(case_id: str, step_id: str, body: HappenedIn, user=Depends(current_
         case, tmpl = _load(case_id)
         when = engine.answer_scheduled(case, tmpl, step_id, body.happened, user["username"], body.track)
         step = _label(case, tmpl, step_id, body.track)
-        states = case.get("side_steps", []) if body.track == "lease" else case["steps"]
+        states = case.get("side_steps", []) if body.track != "main" else case["steps"]
         done = next((s["status"] == "done" for s in states if s["id"] == step_id), False)
         if body.happened:  # a step with more to do after it (e.g. the interview's evaluation) stays open
             _save_and_log(case, user, "step_completed" if done else "step_checked",
@@ -409,7 +442,7 @@ def change_date(case_id: str, step_id: str, body: StepDateIn, user=Depends(curre
 def add_note(case_id: str, body: NoteIn, user=Depends(current_user)):
     with storage.LOCK:
         case, tmpl = _load(case_id)
-        engine.add_note(case, body.text, body.follow_up_date, user["username"])
+        engine.add_note(case, body.text, body.follow_up_date, user["username"], tmpl)
         extra = f" (follow up {nice(body.follow_up_date)})" if body.follow_up_date else ""
         _save_and_log(case, user, "note_added", "added a note" + extra)
     return _view(case, tmpl)
@@ -463,6 +496,24 @@ def reminder(case_id: str, step_id: str, body: ReminderIn, user=Depends(current_
         label = engine.set_reminder(case, tmpl, step_id, body.key, body.done, when, user["username"])
         _save_and_log(case, user, "reminder", f"{'marked' if body.done else 'unmarked'} \"{label}\" as done"
                       + (f" ({nice(when)})" if body.done else ""), {"step_id": step_id, "key": body.key})
+    return _view(case, tmpl)
+
+
+@api.post("/cases/{case_id}/links")
+def link(case_id: str, body: LinkIn, user=Depends(current_user)):
+    """Link or unlink two cases, from either side. The link is kept on the one that links (the lease)."""
+    with storage.LOCK:
+        case, tmpl = _load(case_id)
+        other, other_tmpl = _load(body.case_id)
+        if not tmpl.get("links_to") and other_tmpl.get("links_to"):
+            case, tmpl, other, other_tmpl = other, other_tmpl, case, tmpl
+        if not tmpl.get("links_to"):
+            raise EngineError(f"Only {', '.join(t['label'].lower() for t in engine.TEMPLATES.values() if t.get('links_to'))} cases can be linked to other cases.")
+        engine.set_link(case, tmpl, other, body.linked)
+        verb = "linked" if body.linked else "unlinked"
+        _save_and_log(case, user, f"case_{verb}", f"{verb} {other_tmpl['label'].lower()} case {other['id']}")
+        storage.log_event(user["username"], f"case_{verb}", other["id"], {"text": f"{verb} {tmpl['label'].lower()} case {case['id']}"})
+    case, tmpl = _load(case_id)
     return _view(case, tmpl)
 
 

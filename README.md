@@ -1,6 +1,6 @@
 # Contracts Tracker
 
-Local tool for the contracts team to track Renewals, Transfers, and Expansions step by step.
+Local tool for the contracts team to track Renewals, Transfers, Expansions, and Leases step by step.
 Data is plain JSON on disk. Nothing leaves your network.
 
 ## Run it (Windows)
@@ -29,7 +29,7 @@ Adds five made-up "Demo Store" cases. To start fresh afterwards, delete the `dat
 
 | Path | What it is |
 | --- | --- |
-| `backend/templates/*.json` | The three workflows (steps, order, owners, review periods). Edit these to change the process. |
+| `backend/templates/*.json` | The four workflows (steps, order, owners, review periods). Edit these to change the process. |
 | `data/cases/<id>.json` | One file per case (current state, step dates, notes). |
 | `data/events.jsonl` | Append-only log: who did what, and when. |
 | `data/users.json` | Users (passwords are hashed). |
@@ -59,7 +59,24 @@ where every case stands without an account. Add the full path of the report file
 - Steps with a review period (FDD & NDA 14 days, FA Draft 7 days) show when the review ends.
   They flag as stale 3 days after that; every other step uses `default_stale_days`.
 - For Expansion, the lease runs on its own track and can finish before or after signing.
+- For Renewal, the Operations & Accounting Team Inspection runs on its own track, alongside FDD & NDA and
+  everything after it. It opens once the Contracts Team Evaluation (and Management Confirmation, if needed)
+  is done, and it has to be satisfactory before the signing can be scheduled. Its day count and stale flag
+  work like a main step's.
+- Steps that a template moves from one track to the other keep their history on existing cases.
 - Template changes apply to existing cases: new steps appear as pending, and finished steps keep their dates.
+
+## Lease cases and links
+
+A Lease case is for a premises whose lease is expiring: the follow-up goes out 6 months before it expires,
+the lease draft comes in (extension, renewal, new lease or assignment), and it's reviewed until it's
+approved. It's flagged 60 days before the lease expires and again once it has expired.
+
+A lease case can be linked to any open renewal, transfer or expansion (on the case page, or when the lease
+case is created). Both cases show the link, where the other case stands, and who opened it, so whoever
+handles each one is in the loop. If a lease case and another open case share a store # but aren't linked,
+both show up in Needs attention until someone links them. A renewal, transfer or expansion page also has
+**Start a lease case for this store**, which fills in the store and the link.
 
 ## Changing the frontend
 

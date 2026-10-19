@@ -85,6 +85,8 @@
   ],
   "side_track": {
     "label": "Lease",
+    "note": "Runs on its own, before or after signing",
+    "waiting_label": "Waiting on lease",
     "steps": [
       { "id": "lease_negotiation", "label": "Lease Negotiations (Landlord & Franchisee)", "owner": "Franchisee",
         "hint": "Follow up consistently on the status of the lease." },

@@ -5,7 +5,7 @@ from . import auth
 
 
 def main() -> None:
-    username = input("Username (e.g. stephanie): ").strip()
+    username = input("Username (e.g. alex): ").strip()
     display = input("Display name (shown in the activity log): ").strip()
     while True:
         pw = getpass("Password (8+ characters): ")

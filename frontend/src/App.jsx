@@ -36,13 +36,14 @@ export default function App() {
   if (!user) return <Login onSignedIn={setUser} />
 
   const attentionCount = (cases || []).filter((c) => c.status === 'active' && c.attention.some((a) => a.level !== 'ready')).length
-  const caseMatch = route.match(/^\/cases\/([^/]+)$/)
+  const [path, query] = route.split('?')
+  const caseMatch = path.match(/^\/cases\/([^/]+)$/)
 
   let page
-  if (route === '/') page = <Attention cases={cases} />
-  else if (route === '/cases') page = <Cases cases={cases} />
-  else if (route === '/new') page = <NewCase meta={meta} onCreated={refresh} />
-  else if (caseMatch) page = <CaseDetail key={caseMatch[1]} id={decodeURIComponent(caseMatch[1])} onChange={refresh} />
+  if (path === '/') page = <Attention cases={cases} />
+  else if (path === '/cases') page = <Cases cases={cases} />
+  else if (path === '/new') page = <NewCase key={route} meta={meta} cases={cases} params={new URLSearchParams(query || '')} onCreated={refresh} />
+  else if (caseMatch) page = <CaseDetail key={caseMatch[1]} id={decodeURIComponent(caseMatch[1])} meta={meta} cases={cases} onChange={refresh} />
   else page = <p className="empty">That page doesn't exist. <a href="#/">Back to Needs attention</a></p>
 
   const nav = (path, label, extra) => (

@@ -69,56 +69,12 @@
       ]
     },
     {
-      "id": "ops_acct_inspection",
-      "label": "Operations & Accounting Team Inspection",
-      "owner": "Operations & Accounting",
-      "groups": [
-        {
-          "key": "acct",
-          "label": "Accounting Team Inspection",
-          "short": "Accounting"
-        },
-        {
-          "key": "ops",
-          "label": "Operations Team Inspection",
-          "short": "Operations"
-        }
-      ],
-      "checklist": [
-        {
-          "key": "acct_requested",
-          "label": "Requested",
-          "group": "acct",
-          "owner": "Contracts"
-        },
-        {
-          "key": "acct_satisfactory",
-          "label": "Satisfactory",
-          "group": "acct",
-          "owner": "Accounting"
-        },
-        {
-          "key": "ops_requested",
-          "label": "Requested",
-          "group": "ops",
-          "owner": "Contracts"
-        },
-        {
-          "key": "ops_satisfactory",
-          "label": "Satisfactory",
-          "group": "ops",
-          "owner": "Operations"
-        }
-      ],
-      "hint": "Each team's month starts the day its inspection is requested. If it runs over, Contracts Team follows up with that team."
-    },
-    {
       "id": "fdd_nda",
       "label": "FDD & NDA",
       "owner": "Contracts",
       "review_days": 14,
       "review_from": "fdd_received",
-      "hint": "24–48 hours for the franchisee to sign and return them. The 14-day review starts once they're signed and returned; the signing can't be scheduled before it ends (FAI and the FA draft can go ahead).",
+      "hint": "Goes out once the Contracts Team Evaluation is done, while the Operations & Accounting inspection runs. 24–48 hours for the franchisee to sign and return them. The 14-day review starts once they're signed and returned; the signing can't be scheduled before it ends (FAI and the FA draft can go ahead).",
       "checklist": [
         {
           "key": "fdd_sent",
@@ -365,7 +321,7 @@
       "label": "Franchise Agreement Negotiation / Review Period",
       "owner": "Contracts",
       "review_days": 7,
-      "hint": "7-day franchisee review period, counted from the day the draft was sent. The signing can't be scheduled within those 7 days, before the 14-day FDD & NDA review is over, or before the lease is confirmed.",
+      "hint": "7-day franchisee review period, counted from the day the draft was sent. The signing can't be scheduled within those 7 days, before the 14-day FDD & NDA review is over, before the lease is confirmed, or before the Operations & Accounting inspection is satisfactory.",
       "started_by": {
         "step": "fa_draft",
         "item": "draft_sent",
@@ -384,7 +340,8 @@
             "section": "lease",
             "label": "lease confirmation"
           }
-        ]
+        ],
+        "side_track": "Operations & Accounting Team Inspection"
       }
     },
     {
@@ -422,6 +379,60 @@
       "untimed": true
     }
   ],
+  "side_track": {
+    "label": "Operations & Accounting Team Inspection",
+    "starts_after": "mgmt_confirmation",
+    "alongside": true,
+    "starts_note": "Starts once the Contracts Team Evaluation (and Management Confirmation, if needed) is done.",
+    "note": "Runs alongside FDD & NDA and the steps after it. It has to be satisfactory before the signing can be scheduled.",
+    "waiting_label": "Waiting on inspection",
+    "steps": [
+      {
+        "id": "ops_acct_inspection",
+        "label": "Operations & Accounting Team Inspection",
+        "owner": "Operations & Accounting",
+        "groups": [
+          {
+            "key": "acct",
+            "label": "Accounting Team Inspection",
+            "short": "Accounting"
+          },
+          {
+            "key": "ops",
+            "label": "Operations Team Inspection",
+            "short": "Operations"
+          }
+        ],
+        "checklist": [
+          {
+            "key": "acct_requested",
+            "label": "Requested",
+            "group": "acct",
+            "owner": "Contracts"
+          },
+          {
+            "key": "acct_satisfactory",
+            "label": "Satisfactory",
+            "group": "acct",
+            "owner": "Accounting"
+          },
+          {
+            "key": "ops_requested",
+            "label": "Requested",
+            "group": "ops",
+            "owner": "Contracts"
+          },
+          {
+            "key": "ops_satisfactory",
+            "label": "Satisfactory",
+            "group": "ops",
+            "owner": "Operations"
+          }
+        ],
+        "hint": "Runs alongside FDD & NDA and the steps after it. Each team's month starts the day its inspection is requested. If it runs over, Contracts Team follows up with that team."
+      }
+    ]
+  },
   "dates": [
     {
       "key": "fa_expiration",

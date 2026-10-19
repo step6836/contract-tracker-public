@@ -125,10 +125,24 @@ def _recompute_status(case: dict) -> None:
         case["status"], case["completed_at"] = "active", None
 
 
+def _move_between_tracks(case: dict, tmpl: dict) -> None:
+    """A step the template moved to the other track (e.g. the renewal inspection, which now runs alongside
+    the main steps) takes its saved state with it."""
+    main_ids = {s["id"] for s in tmpl["steps"]}
+    side_ids = {s["id"] for s in (tmpl.get("side_track") or {}).get("steps", [])}
+    for src, dst, ids in (("steps", "side_steps", side_ids - main_ids), ("side_steps", "steps", main_ids - side_ids)):
+        moving = [s for s in case.get(src, []) if s["id"] in ids]
+        if moving:
+            case[src] = [s for s in case[src] if s["id"] not in ids]
+            have = {s["id"] for s in case.get(dst, [])}
+            case[dst] = case.get(dst, []) + [s for s in moving if s["id"] not in have]
+
+
 def sync(case: dict, tmpl: dict) -> dict:
     flags = {f["key"]: f.get("default", False) for f in tmpl.get("flags", [])}
     flags.update({k: v for k, v in case.get("flags", {}).items() if k in flags})
     case["flags"] = flags
+    _move_between_tracks(case, tmpl)
     case["steps"] = _sync_track(case.get("steps", []), tmpl["steps"], flags, _held_at(case))
     side = tmpl.get("side_track")
     case["side_steps"] = _sync_track(case.get("side_steps", []), side["steps"], flags) if side else []
@@ -141,10 +155,45 @@ def _current_index(states: list[dict]) -> Optional[int]:
     return next((i for i, s in enumerate(states) if s["status"] == "pending"), None)
 
 
-def _track(case: dict, tmpl: dict, track: str):
-    if track == "lease":
-        if not tmpl.get("side_track"):
-            raise EngineError("This case type has no lease track.")
+# ---- the side track: steps that run next to the main ones -------------------------------------------
+# A template's "side_track" (the Expansion lease, the Renewal inspection) has its own steps in strict order.
+# It starts with the case, or, with "starts_after": "<main step id>", once that main step and every one
+# before it is done or skipped. "alongside": true makes it part of the case's timing: its current step is
+# timed and flagged when stale, and lists show it next to the main step.
+# The API calls it track "side" ("lease" is still accepted from older pages).
+
+def _side_gate(case: dict, tmpl: dict) -> tuple[bool, Optional[date]]:
+    """Whether the side track has started, and the day it did."""
+    after = (tmpl.get("side_track") or {}).get("starts_after")
+    start = parse(case["start_date"])
+    ids = [s["id"] for s in case["steps"]]
+    if not after or after not in ids:
+        return True, start
+    upto = case["steps"][:ids.index(after) + 1]
+    if not _all_finished(upto):
+        return False, None
+    return True, max([start] + [parse(s["date"]) for s in upto if s["status"] == "done" and s["date"]])
+
+
+def _waiting_label(tmpl: dict) -> str:
+    """What a case is doing once its main steps are done but the side track isn't, e.g. "Waiting on lease"."""
+    side = tmpl.get("side_track") or {}
+    return side.get("waiting_label") or f"Waiting on {side.get('label', 'lease').lower()}"
+
+
+def _side_started(case: dict) -> bool:
+    """Anything recorded on the side track yet."""
+    return any(s["status"] != "pending" or any((s.get("checks") or {}).values()) for s in case.get("side_steps", []))
+
+
+def _track(case: dict, tmpl: dict, track: str, started: bool = True):
+    """A track's step states. Changing the side track before it has started (`started`) is refused."""
+    if track != "main":
+        side = tmpl.get("side_track")
+        if not side:
+            raise EngineError("This case type has no second track.")
+        if started and not _side_gate(case, tmpl)[0]:
+            raise EngineError(side.get("starts_note") or f"The {side['label']} hasn't started yet.")
         return case["side_steps"]
     return case["steps"]
 
@@ -162,23 +211,25 @@ def _for_flags(step: dict, flags: Optional[dict]) -> dict:
 
 
 def _tpl_step(tmpl: dict, step_id: str, track: str, flags: Optional[dict] = None) -> dict:
-    steps = (tmpl.get("side_track") or {}).get("steps", []) if track == "lease" else tmpl["steps"]
-    return _for_flags(next((s for s in steps if s["id"] == step_id), {}), flags)
+    return _for_flags(next((s for s in _tpl_steps(tmpl, track) if s["id"] == step_id), {}), flags)
 
 
-def _clock_start(case: dict, states: list[dict], idx: int, track: str) -> date:
-    """When the step at idx began: the date the last finished step before it was done."""
+def _clock_start(case: dict, states: list[dict], idx: int, track: str, tmpl: Optional[dict] = None) -> date:
+    """When the step at idx began: the date the last finished step before it was done (on the side track,
+    no earlier than the day the track started)."""
     d = parse(case["start_date"])
+    if track != "main" and tmpl:
+        d = _side_gate(case, tmpl)[1] or d
     for s in states[:idx]:
         if s["status"] == "done" and s["date"]:
             d = max(d, parse(s["date"]))
     return d
 
 
-def _entered(case: dict, states: list[dict], idx: int) -> date:
+def _entered(case: dict, states: list[dict], idx: int, track: str = "main", tmpl: Optional[dict] = None) -> date:
     """When the step at idx began; the clock restarts when a step is sent back for correction."""
     st = states[idx]
-    return parse(st["correction"]["started"]) if st.get("correction") else _clock_start(case, states, idx, "main")
+    return parse(st["correction"]["started"]) if st.get("correction") else _clock_start(case, states, idx, track, tmpl)
 
 
 def _started_by_date(step: dict, states: list[dict]) -> Optional[date]:
@@ -289,6 +340,7 @@ def new_case(tmpl: dict, case_id: str, data: dict, user: str) -> dict:
         "holds": [],
         "lease_deadline": None,
         "box_url": (data.get("box_url") or "").strip(),
+        "links": [],
         "flags": {f["key"]: bool(given.get(f["key"], f.get("default", False))) for f in tmpl.get("flags", [])},
         "steps": [],
         "side_steps": [],
@@ -316,7 +368,7 @@ def complete_step(case: dict, tmpl: dict, step_id: str, when: date, user: str, t
         raise EngineError(f"Steps go in order. \"{states[idx]['label']}\" comes next.")
     if when > today():
         raise EngineError("The completion date can't be in the future.")
-    floor = _clock_start(case, states, idx, track)
+    floor = _clock_start(case, states, idx, track, tmpl)
     if when < floor:
         raise EngineError(f"That's before the previous step was completed ({nice(floor)}).")
     checks = states[idx].get("checks", {})
@@ -392,7 +444,7 @@ def set_check(case: dict, tmpl: dict, step_id: str, key: str, checked: bool, whe
         raise EngineError(f"Check off {_item_name(step, after)} first.")
     if when > today():
         raise EngineError("The date can't be in the future.")
-    floor = _clock_start(case, states, idx, track)
+    floor = _clock_start(case, states, idx, track, tmpl)
     if when < floor:
         raise EngineError(f"That's before the previous step was completed ({nice(floor)}).")
     prev_item = group[pos - 1] if pos > 0 else after
@@ -525,7 +577,7 @@ def section_action(case: dict, tmpl: dict, step_id: str, section: str, node: str
         if when > today():
             raise EngineError("The date can't be in the future.")
         sent = max(filter(None, [_check_date(st.get("checks", {}), c["key"]) for c in step.get("checklist", [])]), default=None)
-        floor = max(filter(None, [_clock_start(case, states, idx, track), sent]))
+        floor = max(filter(None, [_clock_start(case, states, idx, track, tmpl), sent]))
         if when < floor:
             raise EngineError(f"That's before {step['checklist'][0]['label'] if sent == floor else 'the previous step was completed'} ({nice(floor)}).")
         sst["done_on"] = iso(when)
@@ -681,7 +733,7 @@ def _held_item(step: dict) -> Optional[dict]:
 
 
 def _tpl_steps(tmpl: dict, track: str) -> list[dict]:
-    return (tmpl.get("side_track") or {}).get("steps", []) if track == "lease" else tmpl["steps"]
+    return (tmpl.get("side_track") or {}).get("steps", []) if track != "main" else tmpl["steps"]
 
 
 def schedule_step(case: dict, tmpl: dict, step_id: str, on: date, at: str, user: str,
@@ -704,7 +756,7 @@ def schedule_step(case: dict, tmpl: dict, step_id: str, on: date, at: str, user:
         clock = datetime.strptime(at or "", "%H:%M").time()
     except ValueError:
         raise EngineError("Pick a time.")
-    if blocked := _schedule_blocked(tmpl, by_step, states):
+    if blocked := _schedule_blocked(case, tmpl, by_step, states):
         raise EngineError(blocked)
     end, why = _not_before(case, tmpl, by_step, states, by_i)
     if end and on < end:
@@ -754,14 +806,17 @@ def _not_before(case: dict, tmpl: dict, by_step: dict, states: list[dict], by_i:
     return max(ends, default=(None, ""))
 
 
-def _schedule_blocked(tmpl: dict, by_step: dict, states: list[dict]) -> Optional[str]:
-    """Why the booking can't be made yet at all, e.g. the lease hasn't been confirmed."""
+def _schedule_blocked(case: dict, tmpl: dict, by_step: dict, states: list[dict]) -> Optional[str]:
+    """Why the booking can't be made yet at all, e.g. the lease hasn't been confirmed, or the side track
+    ("side_track" in "schedule_requires", e.g. the renewal inspection) isn't finished."""
+    what = by_step.get("schedule_label", "date").lower()
     for need in by_step.get("schedule_requires", {}).get("sections", []):
         i = next((j for j, s in enumerate(states) if s["id"] == need["step"]), None)
         sec = next((x for x in _tpl_step(tmpl, need["step"], "main").get("sections", []) if x["key"] == need["section"]), None)
         if i is not None and sec and not _section_done(sec, states[i]):
-            return (f"The {need['label']} has to be done ({states[i]['label']}) before the "
-                    f"{by_step.get('schedule_label', 'date').lower()} can be scheduled.")
+            return f"The {need['label']} has to be done ({states[i]['label']}) before the {what} can be scheduled."
+    if (need := by_step.get("schedule_requires", {}).get("side_track")) and not _all_finished(case.get("side_steps", [])):
+        return f"The {need} has to be done before the {what} can be scheduled."
     return None
 
 
@@ -832,15 +887,20 @@ def skip_step(case: dict, tmpl: dict, step_id: str, reason: str, user: str, trac
 def undo_last(case: dict, tmpl: dict, user: str, track: str = "main") -> dict:
     if case["status"] not in ("active", "completed"):
         raise EngineError("Reopen this case before undoing steps.")
-    states = _track(case, tmpl, track)
+    states = _track(case, tmpl, track, started=False)
     if was := _undo_correction(states):
         _recompute_status(case)
         return was
+    side = tmpl.get("side_track") or {}
+    ids = [s["id"] for s in states]
+    gate = ids.index(side["starts_after"]) if track == "main" and side.get("starts_after") in ids else -1
     for i in range(len(states) - 1, -1, -1):
         if i == 0 and track == "main" and not _tpl_step(tmpl, states[0]["id"], track).get("checklist"):
             break  # the start of the case can't be undone; delete/close the case instead
         s = states[i]
         if s["status"] == "done" or (s["status"] == "skipped" and not s.get("auto")):
+            if i <= gate and _side_started(case):  # the side track started off this step
+                raise EngineError(f"Undo the {side['label']} first: it started once this step was done.")
             was = dict(s)
             s.update(status="pending", date=None, by=None, reason=None, auto=False)
             step = _tpl_step(tmpl, s["id"], track, case["flags"])
@@ -864,7 +924,7 @@ def undo_last(case: dict, tmpl: dict, user: str, track: str = "main") -> dict:
 
 def set_step_date(case: dict, tmpl: dict, step_id: str, new_date: date, track: str = "main") -> dict:
     _require_open(case)
-    states = _track(case, tmpl, track)
+    states = _track(case, tmpl, track, started=False)
     idx = next((i for i, s in enumerate(states) if s["id"] == step_id), None)
     if idx is None or states[idx]["status"] != "done":
         raise EngineError("Only completed steps have a date to change.")
@@ -955,14 +1015,15 @@ def update_case(case: dict, tmpl: dict, fields: dict) -> list[str]:
     return changed
 
 
-def add_note(case: dict, text: str, follow_up: Optional[date], user: str) -> dict:
+def add_note(case: dict, text: str, follow_up: Optional[date], user: str, tmpl: Optional[dict] = None) -> dict:
     text = (text or "").strip()
     if not text:
         raise EngineError("The note is empty.")
-    # Remember where the case was when the note was written, e.g. "Operations & Accounting Team Inspection".
+    # Remember where the case was when the note was written, e.g. "Contracts Team Evaluation".
     idx, side = _current_index(case["steps"]), _current_index(case.get("side_steps", []))
+    track = ((tmpl or {}).get("side_track") or {}).get("label", "Lease")
     step = (case["steps"][idx]["label"] if idx is not None
-            else f"Lease: {case['side_steps'][side]['label']}" if side is not None else None)
+            else f"{track}: {case['side_steps'][side]['label']}" if side is not None else None)
     note = {"id": uuid.uuid4().hex[:8], "text": text, "author": user, "created_at": _now(), "step": step,
             "follow_up_date": iso(follow_up), "resolved": False, "resolved_by": None, "resolved_at": None}
     case["notes"].append(note)
@@ -1004,7 +1065,7 @@ def put_on_hold(case: dict, tmpl: dict, reason: str, when: date, user: str) -> s
         raise EngineError("The date can't be in the future.")
     idx = _current_index(case["steps"])
     st = case["steps"][idx] if idx is not None else None
-    label = st["label"] if st else "Waiting on lease"
+    label = st["label"] if st else _waiting_label(tmpl)
     floor = _entered(case, case["steps"], idx) if st else parse(case["start_date"])
     last_end = max((parse(h["end"]) for h in case.get("holds", [])), default=None)
     floor = max(filter(None, [floor, last_end]))
@@ -1131,7 +1192,7 @@ def _sections_view(step: dict, st: dict) -> list[dict]:
     return out
 
 
-def _steps_view(case, tmpl, tpl_steps, states, t, default_stale, active, timed=True):
+def _steps_view(case, tmpl, tpl_steps, states, t, default_stale, active, timed=True, track="main"):
     tpl = {s["id"]: s for s in tpl_steps}
     cur_idx = _current_index(states) if active else None
     out, current = [], None
@@ -1173,7 +1234,7 @@ def _steps_view(case, tmpl, tpl_steps, states, t, default_stale, active, timed=T
         if any(sec.get("carry_on") for sec in step.get("sections", [])):
             v["carry_on_open"] = st["status"] == "done" and not _signed(tmpl, states)
         if i == cur_idx:
-            entered = _entered(case, states, i)
+            entered = _entered(case, states, i, track, tmpl)
             pair = _booking_pair(tpl_steps, states, i)
             sched = states[pair[1]].get("scheduled") if pair else None
             if pair and pair[1] == i and sched:  # a booked step's clock starts at the booking
@@ -1202,7 +1263,7 @@ def _steps_view(case, tmpl, tpl_steps, states, t, default_stale, active, timed=T
                 not_before, why = _not_before(case, tmpl, by_step, states, pair[0])
                 v["schedule"] = {"label": label, "at": sched["at"] if sched else None, "passed": passed,
                                  "question": question, "held": held, "not_before": iso(not_before),
-                                 "not_before_why": why, "blocked": _schedule_blocked(tmpl, by_step, states)}
+                                 "not_before_why": why, "blocked": _schedule_blocked(case, tmpl, by_step, states)}
                 v["status_note"] = (v["status_note"] if held
                                     else question if question and passed
                                     else f"{label} scheduled for {nice_at(_at(sched))}" if sched
@@ -1220,9 +1281,14 @@ def build_view(case: dict, tmpl: dict, t: Optional[date] = None, config: Optiona
     side_tpl = tmpl.get("side_track")
     side = None
     if side_tpl:
-        s_steps, s_cur = _steps_view(case, tmpl, side_tpl["steps"], case["side_steps"], t, default_stale, active, timed=False)
+        started, started_on = _side_gate(case, tmpl)
+        alongside = bool(side_tpl.get("alongside"))
+        s_steps, s_cur = _steps_view(case, tmpl, side_tpl["steps"], case["side_steps"], t, default_stale,
+                                     active and started, timed=alongside, track="side")
         side = {"label": side_tpl["label"], "steps": s_steps, "current": s_cur,
-                "done": _all_finished(case["side_steps"])}
+                "done": _all_finished(case["side_steps"]), "started": started, "started_on": iso(started_on),
+                "starts_note": side_tpl.get("starts_note"), "note": side_tpl.get("note"), "alongside": alongside,
+                "waiting_label": _waiting_label(tmpl)}
 
     counted = [s for s in steps if not (s["status"] == "skipped" and s["auto"])]
     done = sum(1 for s in counted if s["status"] in ("done", "skipped"))
@@ -1240,6 +1306,7 @@ def build_view(case: dict, tmpl: dict, t: Optional[date] = None, config: Optiona
         if d:
             lease_deadline = {"date": iso(d), "days_left": (d - t).days, "source": "set" if explicit else "auto"}
 
+    expires = parse(case.get("dates", {}).get(tmpl.get("expiration_date", "")))
     notes = []
     for n in case["notes"]:
         n = dict(n)
@@ -1250,11 +1317,11 @@ def build_view(case: dict, tmpl: dict, t: Optional[date] = None, config: Optiona
 
     attention = []
     if active:
-        if current and current.get("is_stale"):
-            over = current["days_in_step"] - current["stale_after"]
-            attention.append({
-                "kind": "stale", "level": "alert" if current["days_in_step"] > 2 * current["stale_after"] else "warn",
-                "text": f"{current['days_in_step']} days on \"{current['label']}\" (flagged after {current['stale_after']})"})
+        for cur in (current, (side or {}).get("current")):
+            if cur and cur.get("is_stale"):
+                attention.append({
+                    "kind": "stale", "level": "alert" if cur["days_in_step"] > 2 * cur["stale_after"] else "warn",
+                    "text": f"{cur['days_in_step']} days on \"{cur['label']}\" (flagged after {cur['stale_after']})"})
         for n in notes:
             if n["overdue"]:
                 days = (t - parse(n["follow_up_date"])).days
@@ -1280,13 +1347,19 @@ def build_view(case: dict, tmpl: dict, t: Optional[date] = None, config: Optiona
                     if not r["done"] and t >= parse(r["from"]):
                         attention.append({"kind": "reminder", "level": "warn",
                                           "text": f"{r['label']}: {rem['what']} due {nice(due)}"})
-        expires = parse(case.get("dates", {}).get(tmpl.get("expiration_date", "")))
         if expires and not signing:
             booked = next((s["scheduled"]["at"] for s in case["steps"] if s.get("scheduled")
                            and _tpl_step(tmpl, s["id"], "main").get("milestone") == "signing"), None)
+            warn_days = tmpl.get("expiry_warn_days")
             if t > expires:
                 attention.append({"kind": "expired", "level": "alert",
-                                  "text": f"FA term expired {nice(expires)} and it isn't signed yet"})
+                                  "text": tmpl.get("expired_text", "FA term expired {date} and it isn't signed yet")
+                                  .format(date=nice(expires))})
+            elif warn_days and (expires - t).days <= warn_days:
+                left = (expires - t).days
+                attention.append({"kind": "expiring", "level": "warn",
+                                  "text": tmpl.get("expiring_text", "Expires {date}").format(
+                                      date=nice(expires), days=f"{left} day{'s' if left != 1 else ''}")})
             elif booked and _at({"at": booked}).date() > expires:
                 attention.append({"kind": "expired", "level": "alert",
                                   "text": f"Signing is scheduled after the FA term expires ({nice(expires)})"})
@@ -1317,23 +1390,85 @@ def build_view(case: dict, tmpl: dict, t: Optional[date] = None, config: Optiona
         "steps": steps, "current": current, "side_track": side, "progress": progress,
         "signing_date": iso(signing), "effective_date": iso(effective), "lease_deadline": lease_deadline,
         "lease_deadline_set": case.get("lease_deadline"),
+        "has_signing": any(s.get("milestone") == "signing" for s in tmpl["steps"]),
+        "expires": iso(expires), "links": case.get("links", []), "links_to": tmpl.get("links_to", []),
         "notes": notes, "attention": attention,
     }
 
 
+def _step_summary(cur: Optional[dict]) -> Optional[dict]:
+    return ({"id": cur["id"], "label": cur["label"], "owner": cur["owner"],
+             "days_in_step": cur["days_in_step"], "days_on_hold": cur.get("days_on_hold", 0),
+             "is_stale": cur.get("is_stale", False), "status_note": cur["status_note"]} if cur else None)
+
+
 def summarize(view: dict) -> dict:
-    cur = view["current"]
+    side = view["side_track"]
     return {
         "id": view["id"], "type": view["type"], "type_label": view["type_label"],
         "store_number": view["store_number"], "store_name": view["store_name"],
         "franchisee": view["franchisee"], "transferee": view["transferee"],
         "status": view["status"], "start_date": view["start_date"],
         "target_signing_date": view["target_signing_date"], "signing_date": view["signing_date"],
-        "progress": view["progress"], "updated_at": view["updated_at"],
-        "current": ({"id": cur["id"], "label": cur["label"], "owner": cur["owner"],
-                     "days_in_step": cur["days_in_step"], "days_on_hold": cur.get("days_on_hold", 0),
-                     "is_stale": cur.get("is_stale", False),
-                     "status_note": cur["status_note"]} if cur else None),
-        "lease_pending": bool(view["side_track"] and not view["side_track"]["done"]),
+        "progress": view["progress"], "updated_at": view["updated_at"], "created_by": view["created_by"],
+        "current": _step_summary(view["current"]),
+        "side": ({"label": side["label"], "done": side["done"], "alongside": side["alongside"],
+                  "waiting_label": side["waiting_label"], "current": _step_summary(side["current"])} if side else None),
+        "has_signing": view["has_signing"], "expires": view["expires"], "links": view["links"],
+        "links_to": view["links_to"],
         "attention": view["attention"], "hold": view["hold"], "dates": view["dates"],
     }
+
+
+# ---- links: a lease case tied to the renewal, transfer or expansion for the same premises ---------------
+# A template with "links_to" (the lease) keeps the IDs of the cases it's linked to in the case's "links";
+# both sides show the link. An open case of the other kind for the same store # that isn't linked yet is
+# suggested on both sides (store # 0, a new location without a number, never matches).
+
+def _linkable(a: dict, b: dict) -> bool:
+    """Whether summary `a` (a linking case, e.g. a lease) can link to summary `b`."""
+    return b["type"] in a.get("links_to", []) and a["id"] != b["id"]
+
+
+def _related_row(s: dict) -> dict:
+    return {"id": s["id"], "type": s["type"], "type_label": s["type_label"], "store_number": s["store_number"],
+            "store_name": s["store_name"], "status": s["status"], "current": s["current"],
+            "side": s["side"], "expires": s["expires"], "created_by": s["created_by"]}
+
+
+def relations(me: dict, others: list[dict]) -> dict:
+    """The cases linked to summary `me`, and open ones for the same store that aren't linked yet."""
+    linked, suggested = [], []
+    for o in others:
+        if o["id"] == me["id"]:
+            continue
+        if (_linkable(me, o) and o["id"] in me["links"]) or (_linkable(o, me) and me["id"] in o["links"]):
+            linked.append(_related_row(o))
+        elif ((_linkable(me, o) or _linkable(o, me)) and o["status"] == "active" and me["status"] == "active"
+              and o["store_number"].lstrip("0") and o["store_number"].lstrip("0") == me["store_number"].lstrip("0")):
+            suggested.append(_related_row(o))
+    return {"linked": linked, "suggested": suggested}
+
+
+def add_relations(view: dict, rel: dict) -> dict:
+    """Put relations() on a view or summary; an unlinked match for the same store needs attention."""
+    view["related"] = rel
+    if view["status"] == "active":
+        for o in rel["suggested"]:
+            view["attention"].append({"kind": "link", "level": "warn",
+                                      "text": f"Store #{o['store_number']} also has an open {o['type_label'].lower()} "
+                                              f"case ({o['id']}). Link them so both sides stay in the loop."})
+        view["attention"].sort(key=lambda a: -LEVEL_RANK[a["level"]])
+    return view
+
+
+def set_link(case: dict, tmpl: dict, other: dict, linked: bool) -> None:
+    """Link (or unlink) `other` to this case, which has to be a linking type (e.g. a lease)."""
+    if other["type"] not in tmpl.get("links_to", []):
+        raise EngineError(f"A {tmpl['label'].lower()} case can't be linked to a {other['type']} case.")
+    links = case.setdefault("links", [])
+    if linked and other["id"] in links:
+        raise EngineError(f"{other['id']} is already linked.")
+    if not linked and other["id"] not in links:
+        raise EngineError(f"{other['id']} isn't linked.")
+    case["links"] = links + [other["id"]] if linked else [x for x in links if x != other["id"]]

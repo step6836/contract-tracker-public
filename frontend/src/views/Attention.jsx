@@ -47,6 +47,11 @@ export default function Attention({ cases }) {
                     {c.current.status_note && <>. {c.current.status_note}</>}
                   </div>
                 )}
+                {c.side?.alongside && c.side.current && (
+                  <div className="muted">Also “{c.side.current.label}” with {c.side.current.owner}, {days(c.side.current.days_in_step)} in
+                    {c.side.current.status_note && <>. {c.side.current.status_note}</>}
+                  </div>
+                )}
               </div>
               <ul className="reasons">
                 {c.attention.map((a, i) => (

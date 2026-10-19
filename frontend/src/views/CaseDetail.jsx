@@ -1,9 +1,9 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { days, fmt, fmtAt, go, STATUS_LABEL, todayISO } from '../util.js'
-import { UnitList } from './NewCase.jsx'
+import { LinkPicker, UnitList } from './NewCase.jsx'
 
-export default function CaseDetail({ id, onChange }) {
+export default function CaseDetail({ id, meta, cases, onChange }) {
   const [c, setC] = useState(null)
   const [error, setError] = useState('')
   const [notFound, setNotFound] = useState(false)
@@ -85,8 +85,8 @@ export default function CaseDetail({ id, onChange }) {
       <dl className="facts">
         <div><dt>Started</dt><dd>{fmt(c.start_date)}</dd></div>
         {c.date_defs.map((d) => <div key={d.key}><dt>{d.label}</dt><dd>{fmt(c.dates[d.key])}</dd></div>)}
-        <div><dt>Target signing</dt><dd>{fmt(c.target_signing_date)}</dd></div>
-        <div><dt>Signed</dt><dd>{c.signing_date ? fmt(c.signing_date) : 'Not yet'}</dd></div>
+        {c.has_signing && <div><dt>Target signing</dt><dd>{fmt(c.target_signing_date)}</dd></div>}
+        {c.has_signing && <div><dt>Signed</dt><dd>{c.signing_date ? fmt(c.signing_date) : 'Not yet'}</dd></div>}
         {c.type === 'transfer' && <div><dt>Transferee becomes franchisee</dt><dd>{c.effective_date ? fmt(c.effective_date) : '1 month after signing'}</dd></div>}
         {c.lease_deadline && <div><dt>Lease deadline</dt><dd className={c.lease_deadline.days_left < 0 ? 'stale-text' : ''}>
           {fmt(c.lease_deadline.date)}{c.lease_deadline.source === 'auto' && <span className="muted small"> (6 months after signing)</span>}</dd></div>}
@@ -98,6 +98,7 @@ export default function CaseDetail({ id, onChange }) {
 
       <div className="cols">
         <section>
+          {c.side_track?.alongside && <SideTrack c={c} active={active} post={post} />}
           <div className="section-head">
             <h2>Progress</h2>
             <span className="muted">{c.progress.done} of {c.progress.total} steps</span>
@@ -111,22 +112,12 @@ export default function CaseDetail({ id, onChange }) {
             <p className="done-note">All steps are done. <button className="link" onClick={() => post('/undo', { track: 'main' })}>Undo last step</button></p>
           )}
 
-          {c.side_track && (
-            <div className="side">
-              <div className="section-head">
-                <h2>{c.side_track.label}</h2>
-                <span className="muted">Runs on its own, before or after signing</span>
-              </div>
-              <Steps c={c} track="lease" active={active} post={post} steps={c.side_track.steps} />
-              {active && c.side_track.steps.some((s) => s.status === 'done') && (
-                <button className="link undo" onClick={() => window.confirm('Undo the most recent lease step?') && post('/undo', { track: 'lease' })}>Undo last lease step</button>
-              )}
-            </div>
-          )}
+          {c.side_track && !c.side_track.alongside && <SideTrack c={c} active={active} post={post} />}
           {c.template_notes.map((n, i) => <p key={i} className="muted small tnote">{n}</p>)}
         </section>
 
         <aside>
+          <Related c={c} meta={meta} cases={cases} post={post} />
           <Notes c={c} post={post} />
           <details className="activity" onToggle={(e) => e.target.open && !events && loadEvents()}>
             <summary>Activity</summary>
@@ -144,16 +135,36 @@ export default function CaseDetail({ id, onChange }) {
   )
 }
 
-function Steps({ c, track, active, post, steps }) {
+// The side track: the Expansion lease (runs on its own), or the Renewal inspection (runs alongside the
+// main steps once the evaluation is done, so it sits above them and has a day count).
+function SideTrack({ c, active, post }) {
+  const t = c.side_track
+  return (
+    <div className={t.alongside ? 'side alongside' : 'side'}>
+      <div className="section-head">
+        <h2>{t.label}</h2>
+        {t.note && <span className="muted">{t.note}</span>}
+      </div>
+      {!t.started && <p className="meta">{t.starts_note}</p>}
+      <Steps c={c} track="side" timed={t.alongside} active={active} post={post} steps={t.steps} />
+      {active && t.steps.some((s) => s.status === 'done') && (
+        <button className="link undo" onClick={() => window.confirm(`Undo the most recent ${t.label} step?`) && post('/undo', { track: 'side' })}>
+          Undo last {t.label} step</button>
+      )}
+    </div>
+  )
+}
+
+function Steps({ c, track, active, post, steps, timed = track === 'main' }) {
   const list = (steps || c.steps).filter((s) => !s.hidden)
   return (
     <ol className="rail">
-      {list.map((s) => <StepRow key={s.id} s={s} track={track} active={active} post={post} onHold={!!c.hold} />)}
+      {list.map((s) => <StepRow key={s.id} s={s} track={track} timed={timed} active={active} post={post} onHold={!!c.hold} />)}
     </ol>
   )
 }
 
-function StepRow({ s, track, active, post, onHold }) {
+function StepRow({ s, track, timed, active, post, onHold }) {
   const [date, setDate] = useState(todayISO())
   const [skipping, setSkipping] = useState(false)
   const [reason, setReason] = useState('')
@@ -190,7 +201,7 @@ function StepRow({ s, track, active, post, onHold }) {
           <div className="meta">Responsible: {s.owner}</div>
           {s.hints.map((h, i) => <div key={i} className="meta">{h}</div>)}
           {/* a booked step (e.g. the signing) has no clock until its time comes */}
-          {track === 'main' && !(s.schedule?.question && s.schedule.at && !s.schedule.passed) && (
+          {timed && !(s.schedule?.question && s.schedule.at && !s.schedule.passed) && (
             <div className={`daycount ${s.is_stale ? 'stale-text' : ''}`}>
               <b>{s.days_in_step === 0 ? 'Started today' : days(s.days_in_step)}</b>{s.days_in_step === 0 ? '' : ' in this step'}
               {s.is_stale && <span className="muted small"> (flagged after {s.stale_after})</span>}
@@ -238,7 +249,7 @@ function StepRow({ s, track, active, post, onHold }) {
           )}
           {active && (
             <div className="actions">
-              {!hasList && !s.schedule && (
+              {!hasList && !s.sections.length && !s.schedule && (
                 <>
                   <label className="inline">Completed on
                     <input type="date" value={date} max={todayISO()} onChange={(e) => setDate(e.target.value)} />
@@ -547,7 +558,7 @@ function Editor({ c, onSave }) {
           <label key={d.key}>{d.label}
             <input type="date" required={d.required} value={dates[d.key] || ''} onChange={(e) => setDates({ ...dates, [d.key]: e.target.value })} /></label>
         ))}
-        <label>Target signing date<input type="date" value={f.target_signing_date} onChange={set('target_signing_date')} /></label>
+        {c.has_signing && <label>Target signing date<input type="date" value={f.target_signing_date} onChange={set('target_signing_date')} /></label>}
         {c.side_track && <label>Lease deadline<input type="date" value={f.lease_deadline} onChange={set('lease_deadline')} />
           <span className="hint">Leave blank to use 6 months after signing.</span></label>}
         <label>Box folder link<input value={f.box_url} onChange={set('box_url')} /></label>
@@ -620,5 +631,58 @@ function Reminders({ rem, active, onSet }) {
       ))}
       {active && <label className="inline small">Followed up on <input type="date" value={date} max={todayISO()} onChange={(e) => setDate(e.target.value)} /></label>}
     </div>
+  )
+}
+
+// Cases tied to this one. A lease case links to the renewal, transfer or expansion for the same premises, and
+// both sides show the link with who opened the other case, so whoever handles either one is in the loop.
+// An open case for the same store # that isn't linked yet is suggested (and flagged in Needs attention).
+function Related({ c, meta, cases, post }) {
+  const rel = c.related || { linked: [], suggested: [] }
+  const linker = c.links_to.length > 0
+  const linkers = meta ? Object.keys(meta.templates).filter((k) => meta.templates[k].links_to.includes(c.type)) : []
+  if (!linker && !linkers.length) return null
+  const kinds = linker ? c.links_to : linkers
+  const taken = new Set([c.id, ...rel.linked.map((o) => o.id), ...rel.suggested.map((o) => o.id)])
+  const options = (cases || []).filter((o) => o.status === 'active' && kinds.includes(o.type) && !taken.has(o.id))
+  const link = (id, linked) => post('/links', { case_id: id, linked })
+  const kindLabel = linker ? 'cases' : `${linkers.map((k) => meta.templates[k].label.toLowerCase()).join(' / ')} cases`
+  return (
+    <div className="related">
+      <h2>Linked {kindLabel}</h2>
+      {rel.linked.length === 0 && rel.suggested.length === 0 && (
+        <p className="muted small">{linker ? 'Not linked to a renewal, transfer or expansion.' : `No ${kindLabel} linked.`}</p>
+      )}
+      <ul>
+        {rel.linked.map((o) => (
+          <RelatedRow key={o.id} o={o}>
+            <button className="link small" onClick={() => window.confirm(`Unlink ${o.id}?`) && link(o.id, false)}>Unlink</button>
+          </RelatedRow>
+        ))}
+        {rel.suggested.map((o) => (
+          <RelatedRow key={o.id} o={o} suggested>
+            <div className="small">Same store #, not linked yet. <button className="link" onClick={() => link(o.id, true)}>Link</button></div>
+          </RelatedRow>
+        ))}
+      </ul>
+      <LinkPicker options={options} onPick={(id) => link(id, true)} />
+      {!linker && <button className="link small" onClick={() => go(`/new?type=${linkers[0]}&from=${encodeURIComponent(c.id)}`)}>
+        Start a {meta.templates[linkers[0]].label.toLowerCase()} case for this store</button>}
+    </div>
+  )
+}
+
+function RelatedRow({ o, suggested, children }) {
+  const at = o.status !== 'active' ? STATUS_LABEL[o.status]
+    : o.current ? `At “${o.current.label}” with ${o.current.owner}` : o.side?.waiting_label
+  return (
+    <li className={suggested ? 'suggested' : ''}>
+      <div className="rel-title"><a className="case-id" href={`#/cases/${encodeURIComponent(o.id)}`}>{o.id}</a>
+        <span className="pill type">{o.type_label}</span>{o.store_name}</div>
+      <div className="small muted">{at}{o.status === 'active' && o.current?.status_note ? `. ${o.current.status_note}` : ''}</div>
+      {o.type === 'lease' && o.expires && <div className="small muted">Lease expires {fmt(o.expires)}</div>}
+      <div className="small muted">Opened by {o.created_by_name}</div>
+      {children}
+    </li>
   )
 }

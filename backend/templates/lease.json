@@ -1,0 +1,37 @@
+{
+  "type": "lease",
+  "label": "Lease",
+  "id_prefix": "L",
+  "start_label": "Lease follow-up sent",
+  "notes": [
+    "For a premises whose lease is expiring: follow up 6 months before it expires, then review the draft until it's approved.",
+    "Link the case to any open renewal, transfer or expansion for the same premises so whoever is handling that case is in the loop (e.g. a transfer needs a lease assignment to the new tenant)."
+  ],
+  "links_to": ["renewal", "transfer", "expansion"],
+  "flags": [],
+  "steps": [
+    { "id": "follow_up_sent", "label": "Lease follow-up sent", "owner": "Contracts",
+      "hint": "Official start date. Goes out 6 months before the lease expires." },
+    { "id": "draft_received", "label": "Lease draft received", "owner": "Franchisee",
+      "hint": "Keep following up until the franchisee sends the extension, renewal or new lease.",
+      "sections": [
+        { "key": "kind", "label": "Lease received", "waiting": "lease draft", "start": "kind",
+          "nodes": {
+            "kind": { "type": "choice", "label": "What came in?", "options": [
+              { "value": "extension", "label": "Extension", "done_text": "Lease extension" },
+              { "value": "renewal", "label": "Renewal", "done_text": "Lease renewal" },
+              { "value": "new", "label": "New lease", "done_text": "New lease" },
+              { "value": "assignment", "label": "Assignment", "done_text": "Lease assignment" } ] } } }
+      ] },
+    { "id": "lease_review", "label": "Lease review", "owner": "Contracts",
+      "hint": "Review the draft and go back and forth with the franchisee until it's satisfactory. Add a note for each round so the history is clear.",
+      "checklist": [ { "key": "lease_approved", "label": "Lease approved" } ] }
+  ],
+  "dates": [
+    { "key": "lease_expiration", "label": "Lease expires", "required": true }
+  ],
+  "expiration_date": "lease_expiration",
+  "expiry_warn_days": 60,
+  "expired_text": "Lease expired {date} and the new one isn't approved yet",
+  "expiring_text": "Lease expires {date} ({days} left) and the new one isn't approved yet"
+}

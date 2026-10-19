@@ -1,10 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { go, todayISO } from '../util.js'
 
-export default function NewCase({ meta, onCreated }) {
-  const [type, setType] = useState('renewal')
+// ?type=lease&from=<case id> (Start a lease case, on a renewal/transfer/expansion) opens the form for that
+// type with the store filled in and the case linked.
+export default function NewCase({ meta, cases, params, onCreated }) {
+  const [type, setType] = useState(params.get('type') || 'renewal')
   const [f, setF] = useState({ store_number: '', store_name: '', franchisee: '', transferee: '', related_units: '', start_date: todayISO(), target_signing_date: '', box_url: '' })
+  const [links, setLinks] = useState(params.get('from') ? [params.get('from')] : [])
+  const from = (cases || []).find((x) => x.id === params.get('from'))
+  useEffect(() => {
+    if (from) setF((f) => ({ ...f, store_number: from.store_number, store_name: from.store_name, franchisee: from.franchisee }))
+  }, [from?.id])
   const [units, setUnits] = useState([{ store_number: '', store_name: '' }])
   const [dates, setDates] = useState({})
   const [flags, setFlags] = useState({})
@@ -12,7 +19,7 @@ export default function NewCase({ meta, onCreated }) {
   const [busy, setBusy] = useState(false)
   if (!meta) return <p className="muted">Loading…</p>
 
-  const t = meta.templates[type]
+  const t = meta.templates[type] || meta.templates.renewal
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
   // Transfers to an existing franchisee can list the franchisee's other units (expansions use UnitList).
   const hasUnits = type === 'transfer' && !!flags.transferee_is_existing
@@ -28,6 +35,7 @@ export default function NewCase({ meta, onCreated }) {
     try {
       const body = { ...f, type, flags, related_units: hasUnits ? f.related_units : '',
         units: type === 'expansion' ? units : [], target_signing_date: f.target_signing_date || null,
+        links: t.links_to.length ? links : [],
         dates: Object.fromEntries(t.dates.map((d) => [d.key, dates[d.key] || null])) }
       const c = await api.post('/cases', body)
       onCreated()
@@ -67,9 +75,9 @@ export default function NewCase({ meta, onCreated }) {
         <label>Start date
           <input type="date" required max={todayISO()} value={f.start_date} onChange={set('start_date')} />
           <span className="hint">The official start: {t.start_label}. That step is marked done on this date.</span></label>
-        <label>Target signing date <span className="opt">(optional)</span>
+        {t.has_signing && <label>Target signing date <span className="opt">(optional)</span>
           <input type="date" value={f.target_signing_date} onChange={set('target_signing_date')} />
-          {t.target_from && <span className="hint">Leave blank to use the {t.dates.find((d) => d.key === t.target_from)?.label.toLowerCase()} date.</span>}</label>
+          {t.target_from && <span className="hint">Leave blank to use the {t.dates.find((d) => d.key === t.target_from)?.label.toLowerCase()} date.</span>}</label>}
       </div>
 
       {t.dates.length > 0 && (
@@ -89,6 +97,8 @@ export default function NewCase({ meta, onCreated }) {
         </label>
       ))}
 
+      {t.links_to.length > 0 && <LinksField types={t.links_to} cases={cases} storeNumber={f.store_number} links={links} onChange={setLinks} />}
+
       <label>Box folder link <span className="opt">(optional)</span><input value={f.box_url} onChange={set('box_url')} placeholder="https://…" /></label>
 
       {t.notes.map((n, i) => <p key={i} className="muted small">{n}</p>)}
@@ -98,6 +108,42 @@ export default function NewCase({ meta, onCreated }) {
         <button type="button" className="btn" onClick={() => history.back()}>Cancel</button>
       </div>
     </form>
+  )
+}
+
+// The open cases a new lease case links to. Open cases for the same store # are offered first.
+function LinksField({ types, cases, storeNumber, links, onChange }) {
+  const open = (cases || []).filter((o) => o.status === 'active' && types.includes(o.type))
+  const byId = Object.fromEntries((cases || []).map((o) => [o.id, o]))
+  const store = storeNumber.replace(/^0+/, '')
+  const same = open.filter((o) => store && o.store_number.replace(/^0+/, '') === store && !links.includes(o.id))
+  const rest = open.filter((o) => !links.includes(o.id) && !same.includes(o))
+  const add = (id) => onChange([...links, id])
+  return (
+    <fieldset className="units links-field">
+      <legend>Linked cases <span className="opt">(optional)</span></legend>
+      {links.length > 0 && <div className="row">{links.map((id) => (
+        <span className="chip" key={id}>{id} {byId[id] && <span className="muted">{byId[id].type_label}</span>}
+          <button type="button" className="link" aria-label={`Remove ${id}`} onClick={() => onChange(links.filter((x) => x !== id))}>×</button></span>
+      ))}</div>}
+      {same.map((o) => (
+        <div className="small" key={o.id}>Store #{o.store_number} has an open {o.type_label.toLowerCase()} case, {o.id}.{' '}
+          <button type="button" className="link" onClick={() => add(o.id)}>Link it</button></div>
+      ))}
+      <LinkPicker options={rest} onPick={add} />
+      <span className="hint">Link the renewal, transfer or expansion for these premises so whoever handles it stays in the loop.</span>
+    </fieldset>
+  )
+}
+
+// A dropdown of open cases to link; picking one links it.
+export function LinkPicker({ options, onPick }) {
+  if (!options.length) return null
+  return (
+    <select value="" onChange={(e) => e.target.value && onPick(e.target.value)} aria-label="Link a case">
+      <option value="">Link another open case…</option>
+      {options.map((o) => <option key={o.id} value={o.id}>{o.id} · {o.type_label} · {o.store_name}</option>)}
+    </select>
   )
 }
 
