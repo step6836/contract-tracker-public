@@ -8,7 +8,7 @@ os.environ["TRACKER_DATA_DIR"] = tempfile.mkdtemp()
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import auth, main
+from backend import auth, engine, main
 
 
 @pytest.fixture(scope="module")
@@ -485,6 +485,26 @@ def test_stale_followups_and_lease_deadline_show_in_attention(client):
     nid = v["notes"][0]["id"]
     v = client.post(f"/api/cases/{c['id']}/notes/{nid}/resolve").json()
     assert not any(a["kind"] == "follow_up" for a in v["attention"])
+
+
+def test_inspection_flags_30_days_after_request(client):
+    c = mk(client, "transfer", store_number="56", start_date=d(60))
+    cid, v = c["id"], c
+    while v["current"]["id"] != "ops_acct_inspection":
+        v = finish(client, cid, v["current"], d(50)).json()
+    cur = v["current"]
+    assert cur["is_stale"] and cur["stale_after"] == 7                  # not requested yet: the usual 7 days
+    chk = lambda key, on: client.post(f"/api/cases/{cid}/steps/ops_acct_inspection/check",
+                                      json={"key": key, "checked": True, "checked_on": on}).json()["current"]
+    cur = chk("acct_requested", d(40))
+    assert cur["is_stale"] and cur["stale_after"] == 30 and cur["days_in_step"] == 40
+    chk("ops_requested", d(20))
+    cur = chk("acct_satisfactory", d(10))                                # Operations' month runs from its request
+    assert not cur["is_stale"] and cur["days_in_step"] == 20
+    for t in ("renewal", "transfer", "expansion"):
+        tmpl = engine.TEMPLATES[t]
+        step = next(s for s in tmpl["steps"] + tmpl.get("side_track", {}).get("steps", []) if s["id"] == "ops_acct_inspection")
+        assert step["stale_after_request_days"] == 30, t
 
 
 def test_close_reopen_and_event_log(client):

@@ -387,6 +387,15 @@ def _check_date(checks: dict, key: str) -> Optional[date]:
     return parse(val) if isinstance(val, str) else None  # older cases stored plain True
 
 
+def _request_clock(step: dict, st: dict) -> Optional[date]:
+    """For a step with "stale_after_request_days" (the inspections): each group's clock starts the day its
+    "starts_clock" box (Requested) is checked. Returns the oldest still-open request, None if there's none."""
+    checks, items = st.get("checks", {}), step.get("checklist", [])
+    started = [_check_date(checks, c["key"]) for c in items if c.get("starts_clock") and checks.get(c["key"])
+               and not all(checks.get(o["key"]) for o in _group_of(items, c))]
+    return min(filter(None, started), default=None)
+
+
 def _group_of(items: list[dict], item: dict) -> list[dict]:
     """The items in the same checklist group (items without a group form one group), in order."""
     return [c for c in items if c.get("group") == item.get("group")]
@@ -1239,10 +1248,12 @@ def _steps_view(case, tmpl, tpl_steps, states, t, default_stale, active, timed=T
             sched = states[pair[1]].get("scheduled") if pair else None
             if pair and pair[1] == i and sched:  # a booked step's clock starts at the booking
                 entered = max(entered, _at(sched).date())
-            held = _held_days(case, entered, t)
-            days = max((t - entered).days - held, 0)
             rd = step.get("review_days")
             stale_after = step.get("stale_after_days") or ((rd + 3) if rd else default_stale)
+            if step.get("stale_after_request_days") and (requested := _request_clock(step, st)):
+                entered, stale_after = max(entered, requested), step["stale_after_request_days"]
+            held = _held_days(case, entered, t)
+            days = max((t - entered).days - held, 0)
             v.update(entered_at=iso(entered), days_in_step=days, days_on_hold=held, stale_after=stale_after,
                      owner=_team(step, st))
             if timed:
