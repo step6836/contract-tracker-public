@@ -12,6 +12,8 @@ from openpyxl import load_workbook
 
 from backend import auth, main, publish, storage
 
+SHEETS = ["Renewals", "Transfers", "Expansions", "Leases"]  # one active-cases sheet per type, dashboard order
+
 
 @pytest.fixture(autouse=True)
 def config(tmp_path, monkeypatch):
@@ -54,22 +56,27 @@ def test_publish_creates_workbook(client, config):
     assert [p.name for p in config.iterdir() if "tmp" in p.name] == []
 
     wb = load_workbook(out)
-    assert wb.sheetnames == ["Summary", "Active", "Completed & Closed"]
+    assert wb.sheetnames == ["Summary", *SHEETS, "Completed & Closed"]
     assert wb.active.title == "Summary"  # execs land on the summary
-    summary, active, closed = wb["Summary"], wb["Active"], wb["Completed & Closed"]
-    for ws in (summary, active, closed):
+    summary, active, closed = wb["Summary"], wb["Renewals"], wb["Completed & Closed"]
+    for ws in (summary, *(wb[n] for n in SHEETS), closed):
         assert ws["A2"].value.startswith("Last updated: ")
         assert not ws.sheet_view.showGridLines
     assert active.freeze_panes == "A4"
-    assert [c.value for c in active[3]] == publish.ACTIVE_HEADERS
+    assert [c.value for c in active[3]] == publish._active_headers(signing=True)
+    assert "Type" not in publish._active_headers(signing=True)              # the sheet is the type
     assert active.cell(row=3, column=1).font.bold
-    assert "ActiveCases" in active.tables  # banded table with filter buttons
+    assert "ActiveRenewals" in active.tables  # banded table with filter buttons
+    assert active["A1"].value == "Active Renewals"
+    assert "Lease Expires" in [c.value for c in wb["Leases"][3]]
 
-    row = next(r for r in active.iter_rows(min_row=4) if r[3].value == "Report Store")
+    row = next(r for r in active.iter_rows(min_row=4) if r[2].value == "Report Store")
     assert "Pat Example" not in [c.value for c in row]                       # no franchisee for execs
-    assert row[5].value == "Contracts"                                         # responsible team
-    assert row[7].value == "Delayed" and row[7].fill.fgColor.rgb.endswith("FFEB9C")
-    assert row[8].value is None or row[8].number_format == publish.DATE_FMT
+    assert row[4].value == "Contracts"                                         # responsible team
+    assert row[6].value == "Delayed" and row[6].fill.fgColor.rgb.endswith("FFEB9C")
+    assert row[7].value is None or row[7].number_format == publish.DATE_FMT
+    # the closed transfer isn't on the Transfers sheet, and renewals stay off it
+    assert all(r[2] not in ("Report Store", "Closed Store") for r in wb["Transfers"].iter_rows(min_row=4, values_only=True))
 
     values = [c for r in summary.iter_rows(values_only=True) for c in r]
     for text in ("At a Glance", "Case Type", "Delayed", "On Hold", "Past Due", "Due Within 30 Days", "Closed Early",
@@ -100,7 +107,7 @@ def test_publish_replaces_existing_file(client, config):
     set_path(config, out)
     out.write_bytes(b"not a real workbook")  # never opened, just replaced
     assert publish.publish_now()["ok"]
-    assert load_workbook(out).sheetnames == ["Summary", "Active", "Completed & Closed"]
+    assert load_workbook(out).sheetnames == ["Summary", *SHEETS, "Completed & Closed"]
 
 
 def test_missing_publish_path_does_nothing(client, config):

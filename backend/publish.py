@@ -25,7 +25,7 @@ log = logging.getLogger("contracts_tracker.publish")
 
 DEBOUNCE_SECONDS = 10
 SOON_DAYS = 30
-HEADER_ROW = 3  # on the Active sheet: row 1 title, row 2 "Last updated"
+HEADER_ROW = 3  # on the per-type sheets: row 1 title, row 2 "Last updated"
 
 ACTIVE_HEADERS = ["Case ID", "Type", "Store #", "Store Name", "Current Step", "Responsible Team",
                   "Days in Step", "Status", "Target Signing Date", "Progress", "Steps Done"]
@@ -86,10 +86,6 @@ def _status(s: dict, t: date) -> str:
     if any(cur and cur["is_stale"] for cur in (s["current"], _alongside(s))):
         return "Delayed"
     return "On Track"
-
-
-def _type_rank(s: dict) -> int:
-    return TYPE_ORDER.index(s["type"]) if s["type"] in TYPE_ORDER else len(TYPE_ORDER)
 
 
 def _alongside(s: dict) -> Optional[dict]:
@@ -198,7 +194,7 @@ def _summary(ws, summaries: list[dict], views: list[dict], t: date, stamp: str) 
                f"Completed in {year}", "Closed Early"]
     _header(ws, row, headers)
     labels = {k: tm["label"] + "s" for k, tm in engine.TEMPLATES.items()}
-    types = sorted(labels, key=lambda k: TYPE_ORDER.index(k) if k in TYPE_ORDER else len(TYPE_ORDER))
+    types = _type_keys()
     totals = [0] * (len(headers) - 1)
     for i, k in enumerate(types):
         mine = [s for s in active if s["type"] == k]
@@ -260,16 +256,29 @@ def _summary(ws, summaries: list[dict], views: list[dict], t: date, stamp: str) 
         ws.cell(row=row + i, column=2, value=meaning).font = Font(color=GREY)
 
 
-def _active(ws, summaries: list[dict], t: date, stamp: str) -> None:
-    _sheet(ws, "Active Cases", stamp)
-    active = sorted((s for s in summaries if s["status"] == "active"),
-                    key=lambda s: (_type_rank(s), s["target_signing_date"] or "9999", s["start_date"]))
+def _type_keys() -> list[str]:
+    return sorted(engine.TEMPLATES, key=lambda k: TYPE_ORDER.index(k) if k in TYPE_ORDER else len(TYPE_ORDER))
+
+
+def _active_headers(signing: bool) -> list[str]:
+    """One sheet per type, so no Type column; leases have no signing and are due when the lease expires."""
+    return [h if signing or h != "Target Signing Date" else "Lease Expires" for h in ACTIVE_HEADERS if h != "Type"]
+
+
+def _active(ws, kind: str, summaries: list[dict], t: date, stamp: str) -> None:
+    label = engine.TEMPLATES[kind]["label"] + "s"
+    signing = any(st.get("milestone") == "signing" for st in engine.TEMPLATES[kind]["steps"])
+    _sheet(ws, f"Active {label}", stamp)
+    due = (lambda s: s["target_signing_date"]) if signing else (lambda s: s["expires"])
+    active = sorted((s for s in summaries if s["status"] == "active" and s["type"] == kind),
+                    key=lambda s: (due(s) or "9999", s["start_date"]))
     rows = []
     for s in active:
         cur, p = s["current"], s["progress"]
-        rows.append([*_store(s), _step(s), _owner(s), cur["days_in_step"] if cur else None,
-                     _status(s, t), _date(s["target_signing_date"]), p["percent"] / 100, f"{p['done']} of {p['total']}"])
-    _table(ws, HEADER_ROW, "ActiveCases", ACTIVE_HEADERS, rows, empty="No active cases.")
+        rows.append([s["id"], s["store_number"], s["store_name"], _step(s), _owner(s),
+                     cur["days_in_step"] if cur else None, _status(s, t), _date(due(s)),
+                     p["percent"] / 100, f"{p['done']} of {p['total']}"])
+    _table(ws, HEADER_ROW, f"Active{label}", _active_headers(signing), rows, empty=f"No active {label.lower()}.")
     ws.freeze_panes = ws.cell(row=HEADER_ROW + 1, column=1)
     ws.print_title_rows = f"{HEADER_ROW}:{HEADER_ROW}"
 
@@ -301,7 +310,8 @@ def build_workbook(now: Optional[datetime] = None) -> Workbook:
     wb = Workbook()
     _summary(wb.active, summaries, views, now.date(), stamp)
     wb.active.title = "Summary"
-    _active(wb.create_sheet("Active"), summaries, now.date(), stamp)
+    for kind in _type_keys():
+        _active(wb.create_sheet(engine.TEMPLATES[kind]["label"] + "s"), kind, summaries, now.date(), stamp)
     _done(wb.create_sheet("Completed & Closed"), views, now.date(), stamp)
     wb.active = 0  # open on the Summary
     return wb
