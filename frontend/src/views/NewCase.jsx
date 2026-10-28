@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
-import { go, todayISO } from '../util.js'
+import { applies, go, todayISO } from '../util.js'
 
 // ?type=lease&from=<case id> (Start a lease case, on a renewal/transfer/expansion) opens the form for that
 // type with the store filled in and the case linked.
@@ -21,6 +21,8 @@ export default function NewCase({ meta, cases, params, onCreated }) {
 
   const t = meta.templates[type] || meta.templates.renewal
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+  const dateDefs = t.dates.filter((d) => applies(d.only_when, flags))
+  const startLabel = t.start_label_when && applies(t.start_label_when, flags) ? t.start_label_when.label : t.start_label
   // Transfers to an existing franchisee can list the franchisee's other units (expansions use UnitList).
   const hasUnits = type === 'transfer' && !!flags.transferee_is_existing
   const unitsField = (
@@ -36,7 +38,7 @@ export default function NewCase({ meta, cases, params, onCreated }) {
       const body = { ...f, type, flags, related_units: hasUnits ? f.related_units : '',
         units: type === 'expansion' ? units : [], target_signing_date: f.target_signing_date || null,
         links: t.links_to.length ? links : [],
-        dates: Object.fromEntries(t.dates.map((d) => [d.key, dates[d.key] || null])) }
+        dates: Object.fromEntries(dateDefs.map((d) => [d.key, dates[d.key] || null])) }
       const c = await api.post('/cases', body)
       onCreated()
       go(`/cases/${c.id}`)
@@ -52,6 +54,8 @@ export default function NewCase({ meta, cases, params, onCreated }) {
           <button type="button" key={k} className={type === k ? 'on' : ''} onClick={() => { setType(k); setFlags({}); setDates({}) }}>{v.label}</button>
         ))}
       </div>
+
+      {t.flags.filter((fl) => fl.choice).map((fl) => <FlagField key={fl.key} fl={fl} flags={flags} onChange={setFlags} />)}
 
       <div className="grid2">
         <label>Store #<input required inputMode="numeric" pattern="[0-9]+" title="Numbers only" value={f.store_number}
@@ -74,15 +78,15 @@ export default function NewCase({ meta, cases, params, onCreated }) {
       <div className="grid2">
         <label>Start date
           <input type="date" required max={todayISO()} value={f.start_date} onChange={set('start_date')} />
-          <span className="hint">The official start: {t.start_label}. That step is marked done on this date.</span></label>
+          <span className="hint">The official start: {startLabel}. That step is marked done on this date.</span></label>
         {t.has_signing && <label>Target signing date <span className="opt">(optional)</span>
           <input type="date" value={f.target_signing_date} onChange={set('target_signing_date')} />
           {t.target_from && <span className="hint">Leave blank to use the {t.dates.find((d) => d.key === t.target_from)?.label.toLowerCase()} date.</span>}</label>}
       </div>
 
-      {t.dates.length > 0 && (
+      {dateDefs.length > 0 && (
         <div className="grid2">
-          {t.dates.map((d) => (
+          {dateDefs.map((d) => (
             <label key={d.key}>{d.label}
               <input type="date" required={d.required} value={dates[d.key] || ''} onChange={(e) => setDates({ ...dates, [d.key]: e.target.value })} />
               {d.hint && <span className="hint">{d.hint}</span>}</label>
@@ -90,12 +94,7 @@ export default function NewCase({ meta, cases, params, onCreated }) {
         </div>
       )}
 
-      {t.flags.map((fl) => (
-        <label className="check" key={fl.key}>
-          <input type="checkbox" checked={!!flags[fl.key]} onChange={(e) => setFlags({ ...flags, [fl.key]: e.target.checked })} />
-          {fl.label}
-        </label>
-      ))}
+      {t.flags.filter((fl) => !fl.choice).map((fl) => <FlagField key={fl.key} fl={fl} flags={flags} onChange={setFlags} />)}
 
       {t.links_to.length > 0 && <LinksField types={t.links_to} cases={cases} storeNumber={f.store_number} links={links} onChange={setLinks} />}
 
@@ -108,6 +107,26 @@ export default function NewCase({ meta, cases, params, onCreated }) {
         <button type="button" className="btn" onClick={() => history.back()}>Cancel</button>
       </div>
     </form>
+  )
+}
+
+// A case option: a checkbox, or with "choice" a pick between off_label and label (e.g. existing or new location).
+export function FlagField({ fl, flags, onChange }) {
+  const pick = (v) => onChange({ ...flags, [fl.key]: v })
+  if (!fl.choice) return (
+    <label className="check">
+      <input type="checkbox" checked={!!flags[fl.key]} onChange={(e) => pick(e.target.checked)} />
+      {fl.label}
+    </label>
+  )
+  return (
+    <div className="stack">
+      <div className="seg" role="group" aria-label={`${fl.off_label} or ${fl.label}`}>
+        <button type="button" className={!flags[fl.key] ? 'on' : ''} onClick={() => pick(false)}>{fl.off_label}</button>
+        <button type="button" className={flags[fl.key] ? 'on' : ''} onClick={() => pick(true)}>{fl.label}</button>
+      </div>
+      {fl.hint && <span className="hint">{fl.hint}</span>}
+    </div>
   )
 }
 

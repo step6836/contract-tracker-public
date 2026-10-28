@@ -84,6 +84,17 @@ def _skip_reason(step: dict) -> str:
     return step["skip_when"].get("reason", "Not needed")
 
 
+def _applies(cond: Optional[dict], flags: dict) -> bool:
+    """A template condition like {"flag": "new_location", "equals": false}; no condition always applies."""
+    return not cond or bool(flags.get(cond["flag"], False)) == cond["equals"]
+
+
+def start_label(tmpl: dict, flags: dict) -> Optional[str]:
+    """The first step's name, which can depend on a flag ("start_label_when"), e.g. a new location's lease."""
+    cond = tmpl.get("start_label_when")
+    return cond["label"] if cond and _applies(cond, flags) else tmpl.get("start_label")
+
+
 def _label(step: dict, flags: dict) -> str:
     """A step's label, which can depend on a flag ("label_when"), e.g. no transferee to evaluate."""
     cond = step.get("label_when")
@@ -295,14 +306,20 @@ def _units(rows) -> list[dict]:
     return out
 
 
-def _dates(tmpl: dict, given: Optional[dict], current: Optional[dict] = None) -> dict:
+def _dates(tmpl: dict, given: Optional[dict], current: Optional[dict] = None, flags: Optional[dict] = None,
+           old_flags: Optional[dict] = None) -> dict:
     """A case's own dates from the template's "dates" (e.g. FA term expires). Required ones have to be given
-    on a new case and can't be cleared later (cases from before a date was added can still be edited)."""
+    on a new case and can't be cleared later (cases from before a date was added can still be edited).
+    A date with "only_when" isn't required when the flag doesn't match (a new location's lease has no expiration),
+    and has to be given once a flag change makes it apply (a new location switched to an existing one)."""
     out = dict(current or {})
     for d in tmpl.get("dates", []):
         if given is not None and d["key"] in given:
             out[d["key"]] = iso(given[d["key"]])
-        if d.get("required") and not out.get(d["key"]) and (current is None or (current or {}).get(d["key"])):
+        if not _applies(d.get("only_when"), flags or {}):
+            continue
+        newly = old_flags is not None and not _applies(d.get("only_when"), old_flags)
+        if d.get("required") and not out.get(d["key"]) and (current is None or current.get(d["key"]) or newly):
             raise EngineError(f"{d['label']} is required.")
     return out
 
@@ -318,7 +335,8 @@ def new_case(tmpl: dict, case_id: str, data: dict, user: str) -> dict:
     if not store_number.isdigit():
         raise EngineError("Store # can only contain numbers")
     given = data.get("flags") or {}
-    dates = _dates(tmpl, data.get("dates") or {})
+    flags = {f["key"]: bool(given.get(f["key"], f.get("default", False))) for f in tmpl.get("flags", [])}
+    dates = _dates(tmpl, data.get("dates") or {}, flags=flags)
     # The target signing date can default to one of the case's dates (e.g. when the FA term expires).
     target = data.get("target_signing_date") or parse(dates.get(tmpl.get("target_from", "")))
     case = {
@@ -341,7 +359,7 @@ def new_case(tmpl: dict, case_id: str, data: dict, user: str) -> dict:
         "lease_deadline": None,
         "box_url": (data.get("box_url") or "").strip(),
         "links": [],
-        "flags": {f["key"]: bool(given.get(f["key"], f.get("default", False))) for f in tmpl.get("flags", [])},
+        "flags": flags,
         "steps": [],
         "side_steps": [],
         "notes": [],
@@ -983,9 +1001,9 @@ def update_case(case: dict, tmpl: dict, fields: dict) -> list[str]:
         val = _units(fields["units"])
         if case.get("units", []) != val:
             case["units"], _ = val, changed.append("related_units")
-    if fields.get("dates") is not None:
+    if fields.get("dates") is not None or fields.get("flags"):  # a flag can make a date required
         before = case.get("dates", {})
-        case["dates"] = _dates(tmpl, fields["dates"], before)
+        case["dates"] = _dates(tmpl, fields.get("dates") or {}, before, {**case["flags"], **(fields.get("flags") or {})}, case["flags"])
         changed += [d["key"] for d in tmpl.get("dates", []) if before.get(d["key"]) != case["dates"].get(d["key"])]
     for key in ("target_signing_date", "lease_deadline"):
         if key in fields:
@@ -1317,7 +1335,8 @@ def build_view(case: dict, tmpl: dict, t: Optional[date] = None, config: Optiona
         if d:
             lease_deadline = {"date": iso(d), "days_left": (d - t).days, "source": "set" if explicit else "auto"}
 
-    expires = parse(case.get("dates", {}).get(tmpl.get("expiration_date", "")))
+    exp_def = next((d for d in tmpl.get("dates", []) if d["key"] == tmpl.get("expiration_date")), {})
+    expires = parse(case.get("dates", {}).get(exp_def["key"])) if exp_def and _applies(exp_def.get("only_when"), case["flags"]) else None
     notes = []
     for n in case["notes"]:
         n = dict(n)
@@ -1396,7 +1415,7 @@ def build_view(case: dict, tmpl: dict, t: Optional[date] = None, config: Optiona
         "hold": next((h for h in _holds_view(case, t) if not h["end"]), None) if case.get("hold") else None,
         "holds": _holds_view(case, t),
         "flags": case["flags"], "flag_defs": tmpl.get("flags", []),
-        "start_label": tmpl.get("start_label"), "template_notes": tmpl.get("notes", []),
+        "start_label": start_label(tmpl, case["flags"]), "template_notes": tmpl.get("notes", []),
         "created_by": case["created_by"], "created_at": case["created_at"], "updated_at": case["updated_at"],
         "steps": steps, "current": current, "side_track": side, "progress": progress,
         "signing_date": iso(signing), "effective_date": iso(effective), "lease_deadline": lease_deadline,
@@ -1427,7 +1446,7 @@ def summarize(view: dict) -> dict:
                   "waiting_label": side["waiting_label"], "current": _step_summary(side["current"])} if side else None),
         "has_signing": view["has_signing"], "expires": view["expires"], "links": view["links"],
         "links_to": view["links_to"],
-        "attention": view["attention"], "hold": view["hold"], "dates": view["dates"],
+        "attention": view["attention"], "hold": view["hold"], "dates": view["dates"], "flags": view["flags"],
     }
 
 

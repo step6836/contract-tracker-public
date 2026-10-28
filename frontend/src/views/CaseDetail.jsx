@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
-import { days, fmt, fmtAt, go, STATUS_LABEL, todayISO } from '../util.js'
-import { LinkPicker, UnitList } from './NewCase.jsx'
+import { applies, days, fmt, fmtAt, go, STATUS_LABEL, todayISO } from '../util.js'
+import { FlagField, LinkPicker, UnitList } from './NewCase.jsx'
 
 export default function CaseDetail({ id, meta, cases, onChange }) {
   const [c, setC] = useState(null)
@@ -84,7 +84,8 @@ export default function CaseDetail({ id, meta, cases, onChange }) {
 
       <dl className="facts">
         <div><dt>Started</dt><dd>{fmt(c.start_date)}</dd></div>
-        {c.date_defs.map((d) => <div key={d.key}><dt>{d.label}</dt><dd>{fmt(c.dates[d.key])}</dd></div>)}
+        {c.flag_defs.filter((fl) => fl.choice).map((fl) => <div key={fl.key}><dt>{fl.group_label}</dt><dd>{c.flags[fl.key] ? fl.label : fl.off_label}</dd></div>)}
+        {c.date_defs.filter((d) => applies(d.only_when, c.flags)).map((d) => <div key={d.key}><dt>{d.label}</dt><dd>{fmt(c.dates[d.key])}</dd></div>)}
         {c.has_signing && <div><dt>Target signing</dt><dd>{fmt(c.target_signing_date)}</dd></div>}
         {c.has_signing && <div><dt>Signed</dt><dd>{c.signing_date ? fmt(c.signing_date) : 'Not yet'}</dd></div>}
         {c.type === 'transfer' && <div><dt>Transferee becomes franchisee</dt><dd>{c.effective_date ? fmt(c.effective_date) : '1 month after signing'}</dd></div>}
@@ -542,7 +543,8 @@ function Editor({ c, onSave }) {
     if (c.type === 'transfer') body.transferee = f.transferee
     if (c.type === 'transfer') body.related_units = hasUnits ? f.related_units : ''
     if (c.type === 'expansion') body.units = units
-    if (c.date_defs.length) body.dates = Object.fromEntries(c.date_defs.map((d) => [d.key, dates[d.key] || null]))
+    const dateDefs = c.date_defs.filter((d) => applies(d.only_when, flags))
+    if (dateDefs.length) body.dates = Object.fromEntries(dateDefs.map((d) => [d.key, dates[d.key] || null]))
     if (c.side_track) body.lease_deadline = f.lease_deadline || null
     onSave(body)
   }
@@ -554,7 +556,7 @@ function Editor({ c, onSave }) {
         {c.type === 'transfer' && <label>Transferee<input value={f.transferee} onChange={set('transferee')} /></label>}
         {hasUnits && <label>Related units<input value={f.related_units} onChange={set('related_units')} /></label>}
         <label>Start date<input type="date" max={todayISO()} value={f.start_date} onChange={set('start_date')} /></label>
-        {c.date_defs.map((d) => (
+        {c.date_defs.filter((d) => applies(d.only_when, flags)).map((d) => (
           <label key={d.key}>{d.label}
             <input type="date" required={d.required} value={dates[d.key] || ''} onChange={(e) => setDates({ ...dates, [d.key]: e.target.value })} /></label>
         ))}
@@ -564,12 +566,7 @@ function Editor({ c, onSave }) {
         <label>Box folder link<input value={f.box_url} onChange={set('box_url')} /></label>
       </div>
       {c.type === 'expansion' && <UnitList units={units} onChange={setUnits} />}
-      {c.flag_defs.map((fl) => (
-        <label className="check" key={fl.key}>
-          <input type="checkbox" checked={!!flags[fl.key]} onChange={(e) => setFlags({ ...flags, [fl.key]: e.target.checked })} />
-          {fl.label}
-        </label>
-      ))}
+      {c.flag_defs.map((fl) => <FlagField key={fl.key} fl={fl} flags={flags} onChange={setFlags} />)}
       <button className="btn primary" onClick={save}>Save changes</button>
     </div>
   )

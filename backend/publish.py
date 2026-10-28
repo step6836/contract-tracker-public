@@ -276,7 +276,8 @@ def _active(ws, kind: str, summaries: list[dict], t: date, stamp: str) -> None:
     for s in active:
         cur, p = s["current"], s["progress"]
         rows.append([s["id"], s["store_number"], s["store_name"], _step(s), _owner(s),
-                     cur["days_in_step"] if cur else None, _status(s, t), _date(due(s)),
+                     cur["days_in_step"] if cur else None, _status(s, t),
+                     _date(due(s)) or ("New location" if s["flags"].get("new_location") else None),
                      p["percent"] / 100, f"{p['done']} of {p['total']}"])
     _table(ws, HEADER_ROW, f"Active{label}", _active_headers(signing), rows, empty=f"No active {label.lower()}.")
     ws.freeze_panes = ws.cell(row=HEADER_ROW + 1, column=1)

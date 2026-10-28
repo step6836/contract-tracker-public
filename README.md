@@ -68,9 +68,13 @@ where every case stands without an account. Add the full path of the report file
 
 ## Lease cases and links
 
-A Lease case is for a premises whose lease is expiring: the follow-up goes out 6 months before it expires,
-the lease draft comes in (extension, renewal, new lease or assignment), and it's reviewed until it's
-approved. It's flagged 60 days before the lease expires and again once it has expired.
+A Lease case is one of two kinds, picked when the case is created (and changeable under Edit):
+
+- **Existing location**: the lease is expiring. The follow-up goes out 6 months before it expires, the lease
+  draft comes in (extension, renewal, new lease or assignment), and it's reviewed until it's approved. The
+  lease expiration date is required; the case is flagged 60 days before it and again once it has passed.
+- **New location**: starts when the site approval form comes in. There's no lease on file, so there's no
+  expiration date and no expiry flag. Otherwise the steps are the same.
 
 A lease case can be linked to any open renewal, transfer or expansion (on the case page, or when the lease
 case is created). Both cases show the link, where the other case stands, and who opened it, so whoever

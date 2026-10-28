@@ -17,6 +17,9 @@ export const todayISO = () => {
   return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
 }
 
+// A template condition like { flag: 'new_location', equals: false }; no condition always applies.
+export const applies = (cond, flags) => !cond || !!flags[cond.flag] === cond.equals
+
 export const days = (n) => `${n} day${n === 1 ? '' : 's'}`
 
 export const go = (path) => { window.location.hash = path }

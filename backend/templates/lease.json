@@ -3,15 +3,23 @@
   "label": "Lease",
   "id_prefix": "L",
   "start_label": "Lease follow-up sent",
+  "start_label_when": { "flag": "new_location", "equals": true, "label": "Site approval form received" },
   "notes": [
-    "For a premises whose lease is expiring: follow up 6 months before it expires, then review the draft until it's approved.",
+    "Existing location: the lease is expiring, so follow up 6 months before it expires, then review the draft until it's approved.",
+    "New location: starts when the site approval form comes in. There's no lease on file yet, so there's no expiration date.",
     "Link the case to any open renewal, transfer or expansion for the same premises so whoever is handling that case is in the loop (e.g. a transfer needs a lease assignment to the new tenant)."
   ],
   "links_to": ["renewal", "transfer", "expansion"],
-  "flags": [],
+  "flags": [
+    { "key": "new_location", "label": "New location", "off_label": "Existing location", "choice": true, "group_label": "Location", "default": false,
+      "hint": "Existing: the lease is expiring and needs an extension, renewal or new lease. New: starts with a site approval form." }
+  ],
   "steps": [
     { "id": "follow_up_sent", "label": "Lease follow-up sent", "owner": "Contracts",
-      "hint": "Official start date. Goes out 6 months before the lease expires." },
+      "label_when": { "flag": "new_location", "equals": true, "label": "Site approval form received" },
+      "hint": "Official start date.",
+      "hints": [ { "when": { "flag": "new_location", "equals": false }, "text": "Goes out 6 months before the lease expires." },
+                 { "when": { "flag": "new_location", "equals": true }, "text": "The site approval form for the new location came in." } ] },
     { "id": "draft_received", "label": "Lease draft received", "owner": "Franchisee",
       "hint": "Keep following up until the franchisee sends the extension, renewal or new lease.",
       "sections": [
@@ -28,7 +36,8 @@
       "checklist": [ { "key": "lease_approved", "label": "Lease approved" } ] }
   ],
   "dates": [
-    { "key": "lease_expiration", "label": "Lease expires", "required": true }
+    { "key": "lease_expiration", "label": "Lease expires", "required": true,
+      "only_when": { "flag": "new_location", "equals": false } }
   ],
   "expiration_date": "lease_expiration",
   "expiry_warn_days": 60,

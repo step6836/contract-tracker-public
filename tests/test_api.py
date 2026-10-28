@@ -677,6 +677,24 @@ def test_lease_case_follow_up_review_and_approval(client):
     assert any(a["kind"] == "expired" and "isn't approved" in a["text"] for a in expired["attention"])
 
 
+def test_new_location_lease_starts_with_site_approval_and_has_no_expiration(client):
+    c = mk(client, "lease", store_number="0", start_date=d(2), flags={"new_location": True})   # no expiration needed
+    assert c["flags"] == {"new_location": True} and c["expires"] is None and c["attention"] == []
+    assert c["steps"][0]["label"] == "Site approval form received" and c["steps"][0]["status"] == "done"
+    assert c["start_label"] == "Site approval form received" and c["current"]["id"] == "draft_received"
+    listed = next(x for x in client.get("/api/cases").json() if x["id"] == c["id"])
+    assert listed["flags"]["new_location"] and listed["expires"] is None
+    # switching it to an existing location needs the expiration
+    r = client.patch(f"/api/cases/{c['id']}", json={"flags": {"new_location": False}, "dates": {"lease_expiration": None}})
+    assert r.status_code == 400 and "Lease expires" in r.json()["detail"]
+    assert client.patch(f"/api/cases/{c['id']}", json={"flags": {"new_location": False}}).status_code == 400
+    v = client.patch(f"/api/cases/{c['id']}", json={"flags": {"new_location": False}, "dates": {"lease_expiration": d(-30)}}).json()
+    assert v["steps"][0]["label"] == "Lease follow-up sent" and any(a["kind"] == "expiring" for a in v["attention"])
+    # and back: the old expiration date no longer flags it
+    v = client.patch(f"/api/cases/{c['id']}", json={"flags": {"new_location": True}}).json()
+    assert v["expires"] is None and v["attention"] == []
+
+
 def test_lease_links_to_renewals_transfers_and_expansions(client):
     tr = mk(client, "transfer", store_number="95")
     lease = mk(client, "lease", store_number="95", dates={"lease_expiration": d(-150)})

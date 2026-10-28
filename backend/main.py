@@ -260,7 +260,8 @@ def me(user=Depends(current_user)):
 @api.get("/meta")
 def meta(user=Depends(current_user)):
     return {"today": engine.iso(engine.today()),
-            "templates": {k: {"label": t["label"], "start_label": t.get("start_label"), "flags": t.get("flags", []),
+            "templates": {k: {"label": t["label"], "start_label": t.get("start_label"),
+                              "start_label_when": t.get("start_label_when"), "flags": t.get("flags", []),
                               "notes": t.get("notes", []), "has_lease_track": bool(t.get("side_track")),
                               "dates": t.get("dates", []), "target_from": t.get("target_from"),
                               "has_transferee": k == "transfer", "links_to": t.get("links_to", []),

@@ -88,7 +88,7 @@ export default function Cases({ cases }) {
                     <div className="bar" title={`${c.progress.done} of ${c.progress.total} steps`}><i style={{ width: `${c.progress.percent}%` }} /></div>
                     <span className="small muted">{c.progress.done}/{c.progress.total}</span>
                   </td>
-                  <td>{due(c) ? fmt(due(c)) : <span className="muted">Not set</span>}
+                  <td>{due(c) ? fmt(due(c)) : <span className="muted">{c.flags?.new_location ? 'New location' : 'Not set'}</span>}
                     {type === 'all' && !c.has_signing && c.expires && <div className="muted small">lease expires</div>}</td>
                 </tr>
               ))}
